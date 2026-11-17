@@ -16,6 +16,8 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\AcceptCrypto.Service\AcceptCrypto.Service.csproj" />
+    <ProjectReference Include="..\..\src\AcceptCrypto.LocalChain\AcceptCrypto.LocalChain.csproj" />
+    <ProjectReference Include="..\..\src\AcceptCrypto.Payer\AcceptCrypto.Payer.csproj" />
   </ItemGroup>
 
 </Project>

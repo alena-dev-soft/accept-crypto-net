@@ -34,6 +34,10 @@ jobs:
         with:
           global-json-file: global.json
 
+      - name: Install Foundry (anvil for the chain integration tests)
+        # Optional: without it the tests start Anvil from the ghcr.io/foundry-rs/foundry image via Testcontainers.
+        uses: foundry-rs/foundry-toolchain@v1
+
       - name: Docker info (for Testcontainers)
         run: docker version --format 'Docker {{.Server.Version}}'
 
