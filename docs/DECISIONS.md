@@ -16,6 +16,7 @@ New decisions are appended with the next number; a changed decision is marked *S
 | D8 | Payment page | Instructions + QR code, no wallet connection |
 | D9 | Deployment | Local (one command) by default; public testnet optional, following a guide |
 | D10 | Solution layout & tooling | .NET 10, layered projects, central package management, warnings as errors |
+| D11 | Domain model & edge cases | BigInteger base units; status derived from facts, walked along diagram edges; `expired → confirming` for on-time payments found late; late overpay → `paid_late` |
 
 ---
 
@@ -137,3 +138,53 @@ command (NFR-9). A public testnet instance is optional and described in a step-b
 - `Directory.Build.props`: nullable, implicit usings, **warnings as errors**, .NET analyzers
   (`AnalysisMode=Recommended`), code style enforced in build. `Directory.Packages.props`: central package versions.
 - Solution file: `AcceptCrypto.NET.slnx` (the new XML solution format, default in .NET 10).
+
+## D11 — Domain model and state-machine edge cases (step 2)
+
+**Money.** `UsdcAmount` stores integer **base units** in a `BigInteger` (6 decimals, bounded by `uint256`
+when parsed or built from chain data). Parsing is strict and culture-free: ASCII digits, no sign/whitespace/
+exponent/group separators, no leading zeros (except `0`), optional `.` + 1–6 digits. `"1.0000000"` is rejected
+(7 decimals) even though it is numerically exact. Canonical output trims trailing zeros (`"10.5"`, `"3"`);
+`ToFixedString()` gives `"10.500000"`. One token per deployment (MVP), so the type is USDC-specific rather than
+a generic (amount, decimals) pair; a different-decimals token is a roadmap item.
+
+**How status is computed.** Operations change facts (record / confirm / revert a transfer, deadline check,
+cancel); the invoice then derives the target status and walks to it **only along diagram edges**, emitting one
+`InvoiceStatusChanged` event per edge. Target status:
+1. any unconfirmed **on-time** transfer → `confirming`;
+2. else on-time confirmed total `>` amount → `overpaid`, `=` amount → `paid` (tolerance 0);
+3. else, before the deadline → `pending` (nothing confirmed) / `underpaid`;
+4. else (deadline passed) → `paid_late` if confirmed total incl. late transfers `>=` amount, otherwise `expired`.
+
+The deadline counts as passed when `now >= ExpiresAt`, or the invoice was already expired (sticky — immune to
+clock skew), or a non-reverted transfer has a block timestamp `>= ExpiresAt` (chain evidence). A block timestamp
+exactly at the deadline is **late**.
+
+**Edge cases resolved here (not in the spec):**
+
+| Case | Decision |
+| --- | --- |
+| Overpayment after the deadline (late transfers push the total above the amount) | `paid_late`; the excess is visible as `ExcessAmount` / `ConfirmedTotal` (no separate status) |
+| Partial late payment into `expired` | Recorded and summed; invoice stays `expired` until the total reaches the amount → `paid_late` |
+| Late transfer seen (unconfirmed) on an `expired` invoice | No status change, no `confirming` (diagram has no `expired → confirming` for late money); `paid_late` once confirmed |
+| On-time transfer (block ts < deadline) discovered only after the invoice was marked `expired` (scanner lag / downtime) | **New edge `expired → confirming`**, then the normal `paid`/`overpaid`/`underpaid` path. The spec's "on time by block timestamp" rule wins. The expiry worker should also avoid this by expiring only once the scanner has caught up past the deadline (step 6) |
+| Deadline passes while `confirming` | No change; the invoice waits for confirmations. If the result is short: `confirming → underpaid → expired` (two events) |
+| Reorg after the deadline removes everything | `payment.reverted`, then `confirming → pending → expired` |
+| Late transfer arrives while still `confirming` (before the on-time one confirms) | Accepted (invoice not terminal). After the invoice turns `paid`, it can still confirm/revert: no status change, excess visible |
+| Transfer to a terminal invoice (`paid`, `overpaid`, `paid_late`, `cancelled`) | `RecordTransfer` returns `InvoiceClosed`; the caller stores it as an unmatched payment (FR-11a) |
+| Same transfer (tx hash + log index) again | `Duplicate`, no change — also on terminal invoices (checked before "closed") |
+| A reverted transfer re-included in a new block (same tx hash + log index) | Reinstated with the new block data, back to "seen" |
+| Revert of a **confirmed** transfer | Rejected (`transfer_state_conflict`): N confirmations = final (D4). Choose N so deeper reorgs are not a practical risk |
+| Zero-amount transfer | Rejected by `ChainTransfer` (address-poisoning spam); the scanner drops them |
+| Cancel a `pending` invoice whose deadline passed but which the worker has not expired yet | Allowed (status is still `pending`) |
+| `invoice.created` event | Not emitted: creation is the merchant's own synchronous API call; events are for status changes (FR-12) |
+
+**Events.** `InvoiceStatusChanged` (type `invoice.<status>`) and `PaymentReverted` (`payment.reverted`), each with
+a UUIDv7 `EventId`. One operation may return several events; their list order is the causal order and the outbox
+(step 3) must preserve it (e.g. an identity column), since UUIDv7s from the same millisecond are not guaranteed monotonic.
+`payment.reverted` is emitted for every reverted transfer, also on terminal invoices, before any status event.
+
+**Payment page token.** 32 bytes from `RandomNumberGenerator`, base64url (43 chars).
+**Deposit address** is validated and stored lower case; EIP-55 casing is presentation (step 5).
+**Clock.** `Invoice.Create` takes a `TimeProvider`; operations take `now` explicitly, so the caller decides which
+clock applies (tests use `FakeTimeProvider`).

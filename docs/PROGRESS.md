@@ -5,7 +5,7 @@ Spec: `AcceptCrypto.NET_SPEC.md` (project file, not in the repo). Decisions: [DE
 ## Plan
 
 - [x] **1. Solution skeleton, decision log, CI and progress file** (this file, DECISIONS.md, CI workflow in `docs/ci/ci.yml`, /health stub)
-- [ ] 2. Domain: money (USDC base units), invoice aggregate, status machine incl. `cancelled`, unit tests
+- [x] **2. Domain: money (USDC base units), invoice aggregate, status machine incl. `cancelled`, unit tests** (see step notes, DECISIONS D11)
 - [ ] 3. Infrastructure: PostgreSQL / EF Core, migrations, outbox, idempotency keys
 - [ ] 4. Merchant API: create/get/list/cancel invoices, unmatched payments, resend event; API key auth, Problem Details, OpenAPI
 - [ ] 5. xpub address derivation (BIP32 non-hardened → EIP-55 address)
@@ -48,6 +48,34 @@ Runs on `ubuntu-latest` (Docker available for Testcontainers).
 - Tests: domain status terminality, SDK options default, `/health` via `WebApplicationFactory<Program>`.
 - Analyzer notes: test projects suppress CS1591, CA1707, CA2007, CA1515 (see `.editorconfig`);
   `GenerateDocumentationFile` stays on everywhere so IDE0005 (unused usings) is enforced on build.
+
+
+### Step 2 — domain (done)
+
+All in `src/AcceptCrypto.Domain` (no package dependencies), decisions in DECISIONS.md **D11**.
+
+- `Money/UsdcAmount` — base units in `BigInteger`, strict `Parse`/`TryParse`, `ToString()` (canonical) /
+  `ToFixedString()`, `+ - < > <= >=`, `SubtractOrZero`.
+- `Chain/ChainTransfer` (validated, lower-cased observation of an ERC-20 `Transfer`), `TransferId` (tx hash + log index),
+  `EvmHex` (address/hash validation).
+- `Invoices/Invoice` aggregate: `Create(NewInvoice, InvoicePolicy, TimeProvider)`, `RecordTransfer` →
+  `TransferRecordResult` (`Accepted` / `Duplicate` / `InvoiceClosed` → caller stores unmatched), `ConfirmTransfer`,
+  `RevertTransfer`, `CheckDeadline`, `Cancel`. Each returns the domain events in causal order.
+  Totals: `ConfirmedTotal`, `ConfirmedOnTimeTotal`, `UnconfirmedTotal`, `RemainingAmount`, `ExcessAmount`.
+  `Invoice.IsTransitionAllowed` exposes the edge table (diagram + `pending → cancelled` + `expired → confirming`).
+- `ObservedTransfer` (state Seen/Confirmed/Reverted, `IsOnTime`), `InvoiceStatusChanged` / `PaymentReverted` events
+  (`InvoiceEventTypes`), `InvoicePolicy` (min/max amount, default/min/max lifetime, metadata/ID length limits;
+  `EnsureValid()` for startup), `PaymentPageToken`, `DomainException` + `DomainErrorCodes` (for Problem Details).
+- Persistence prep: private parameterless constructors and private setters, transfers in a `_transfers` backing field.
+- Tests (`tests/AcceptCrypto.Domain.Tests`, 135): money parsing/formatting/comparison, chain data validation,
+  invoice creation & deadlines (`FakeTimeProvider` from `Microsoft.Extensions.TimeProvider.Testing`), every
+  diagram edge, edge cases of D11, idempotency, events, and a test that the transition table equals the diagram.
+
+Notes for next steps:
+- Step 3 (storage): map `UsdcAmount` as `numeric(78,0)` of base units (value converter on `BaseUnits`);
+  unique `(tx_hash, log_index)` per chain; keep outbox order = event list order; row version on invoices (NFR-3).
+- Step 6 (scanner): call `RecordTransfer` then `ConfirmTransfer` in the same transaction when a transfer is
+  already deep enough; run `CheckDeadline` only once the scanner has caught up past the deadline.
 
 ## Open points
 
