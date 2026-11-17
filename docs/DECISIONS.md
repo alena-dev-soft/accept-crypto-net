@@ -351,3 +351,72 @@ Preview runs without a chain. `appsettings.Development.json` holds the local Anv
 **Known limitation.** An unmatched payment recorded from a block that is later reorged away stays in the unmatched
 list (it is informational; invoices are never affected). Roadmap: re-verify recent unmatched rows like unconfirmed
 transfers.
+
+## D15 — Merchant API, configuration, SSRF guard (step 4 of the plan: merchant API)
+
+Reference: [API.md](API.md). Code: `src/AcceptCrypto.Service/Api`, `Configuration`, `Health`;
+`src/AcceptCrypto.Infrastructure/Merchant` (merchant options + validator) and `Webhooks` (webhook options, SSRF guard).
+
+**Routes.** Versioned prefix `/v1` (the scripted payer already calls `GET /v1/invoices/{id}` with `X-Api-Key`, D13).
+Minimal APIs with typed results (`Results<…>`), so the OpenAPI document (`Microsoft.AspNetCore.OpenApi`, OpenAPI 3.1)
+lists the real status codes. UI: Scalar at `/scalar` (lighter than Swagger UI, renders 3.1). Both are public — the
+document contains no secrets and the API is useless without a key.
+
+**Wire format.** snake_case JSON and enums (`paid_late`), amounts as decimal **strings** (a JSON number `10.5` is a
+400: money never goes through binary floating point). The invoice response nests the FR-4 payer details under
+`payment`, which is what the payer and the payment page read; `metadata` / `external_order_id` stay outside it (FR-29).
+
+**Authentication.** A custom `AuthenticationHandler` for `X-Api-Key`: both values are SHA-256 hashed, then compared
+with `CryptographicOperations.FixedTimeEquals` (no length/content timing leak). One merchant → one key, no roles.
+The challenge writes Problem Details (`api_key_missing` / `api_key_invalid`). The key is never logged (test:
+`Secrets_never_appear_in_logs`).
+
+**Configuration (FR-0) is validated at startup** (`ValidateOnStart`): API key and webhook secrets ≥ 32 chars, previous
+secret ≠ current, xpub parses (xprv refused), webhook URL passes the static SSRF check, invoice limits pass the
+domain's `InvoicePolicy.EnsureValid`, retry schedule sane. Messages name the setting, never the value. Consequence:
+the service no longer starts without merchant configuration — the Preview (`scripts/dev.sh`) therefore runs with
+`ASPNETCORE_ENVIRONMENT=Development`, whose `appsettings.Development.json` holds clearly-labelled throwaway values.
+Secret rotation (FR-0): `Merchant:WebhookSecret` + optional `Merchant:PreviousWebhookSecret`; step 7 decides how both
+are used for signatures (e.g. one signature per secret in the header during rotation).
+
+**Validation and errors (FR-20).** Field checks in the endpoint (presence, amount syntax, header syntax) plus the
+domain's own rules: a `DomainException` from `Invoice.Create` is mapped by its code to a field
+(`amount_out_of_range` → `amount`, …) and returned as `400 validation_failed` — the rules live once, in the domain.
+Malformed JSON → `400 malformed_request` (`ThrowOnBadRequest` + an `IExceptionHandler`); unknown routes → `404` via
+status-code pages; unexpected exceptions → `500` without internals. Every problem has `code` and `trace_id`; `type`
+links to the error list in API.md.
+
+**Idempotency (FR-2).** Optional `Idempotency-Key` header; fingerprint = SHA-256 of the canonical request (amount
+value, order ID, metadata sorted, lifetime). Replay → `200` + `Idempotent-Replayed: true`; different request with
+the same key → `422 idempotency_key_reused` (IETF idempotency-key draft semantics).
+
+**Cancel.** `pending` → `cancelled` (D6) via the unit of work (event in the outbox atomically). Already cancelled →
+`200` without a second event (idempotent). Anything else → `409 invoice_not_cancellable` with `current_status`
+(`status` is reserved by RFC 9457).
+
+**Pagination (FR-18).** Keyset on `(created_at, id)` descending (repository from step 3), unmatched by `id`; the
+cursor is opaque base64url with a version prefix. `created_from` inclusive, `created_to` exclusive.
+
+**Resend (FR-15).** `OutboxEvent.Resend` (status pending, attempts 0, due now) under the `xmin` row-version check,
+retried 3× on a concurrency conflict, then `409`. Same event ID and payload bytes; history kept. Answer `202`.
+
+**SSRF (NFR-6).** `WebhookUrlGuard` (Infrastructure, used by the step 7 dispatcher):
+1. Startup (`CheckSyntax`, no DNS — the demo shop may not be up yet): absolute http(s), no credentials/fragment,
+   https unless allowlisted, no blocked IP literal, no `localhost`/`*.localhost` unless allowlisted.
+2. `CheckAsync`: resolves the host; **every** address must be public (one private answer refuses the URL).
+3. `CreateHttpHandler()`: a `SocketsHttpHandler` whose `ConnectCallback` resolves again, checks, and connects to the
+   address it just checked — DNS rebinding between check and request cannot reach the internal network. No redirects,
+   no proxy. Blocked: 0/8, 10/8, 100.64/10, 127/8, 169.254/16 (cloud metadata), 172.16/12, 192.0.0/24, TEST-NETs,
+   192.168/16, 198.18/15, multicast/reserved/broadcast, `::`, `::1`, fe80::/10, fec0::/10, fc00::/7, ff00::/8,
+   2001:db8::/32, and IPv4-mapped/compatible/NAT64/6to4 forms of blocked IPv4.
+   `Webhooks:AllowedHosts` (exact host match) bypasses the address check and allows plain http — for `demo-shop` on the
+   Docker network and `localhost` in development.
+
+**Health (NFR-7).** `/health` keeps its meaning (liveness + scanner state, no dependencies → green without a DB, as
+the Preview needs); `/health/ready` adds `database` and `rpc` (chain ID must match) with a JSON report without
+exception texts (they may contain host names).
+
+**Logs (NFR-7).** Production console logs are JSON (`Logging:Console:FormatterName = json`, UTC timestamps, scopes —
+the request's trace ID is in the scope); Development uses the simple formatter. Endpoint events use source-generated
+`LoggerMessage` with IDs/amounts only, never metadata or keys. A startup line summarises the configuration (webhook
+origin, number of secrets, chain) without values.

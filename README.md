@@ -12,5 +12,7 @@ Requires the [.NET 10 SDK](https://dotnet.microsoft.com/download).
 ```bash
 dotnet build AcceptCrypto.NET.slnx
 dotnet test AcceptCrypto.NET.slnx
-dotnet run --project src/AcceptCrypto.Service   # GET /health
+dotnet run --project src/AcceptCrypto.Service   # Development settings: /health, /scalar (API reference), /v1/*
 ```
+
+Merchant REST API: see [docs/API.md](docs/API.md) (OpenAPI at `/openapi/v1.json`, UI at `/scalar`).

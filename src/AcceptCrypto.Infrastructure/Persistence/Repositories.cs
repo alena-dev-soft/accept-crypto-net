@@ -34,7 +34,7 @@ public interface IOutboxRepository
     Task<IReadOnlyList<OutboxEvent>> ListByInvoiceAsync(Guid invoiceId, CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Loads an event, applies <paramref name="change"/> and saves it, guarded by the row version (xmin).
+    /// Loads an event (with its delivery attempts), applies <paramref name="change"/> and saves it, guarded by the row version (xmin).
     /// Returns null if the event does not exist; throws <see cref="DbUpdateConcurrencyException"/> if it changed meanwhile.
     /// </summary>
     Task<OutboxEvent?> UpdateAsync(Guid eventId, Action<OutboxEvent> change, CancellationToken cancellationToken = default);
@@ -144,7 +144,7 @@ public sealed class OutboxRepository(IDbContextFactory<AcceptCryptoDbContext> co
     {
         ArgumentNullException.ThrowIfNull(change);
         await using var db = await contextFactory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
-        var outboxEvent = await db.OutboxEvents.SingleOrDefaultAsync(e => e.EventId == eventId, cancellationToken).ConfigureAwait(false);
+        var outboxEvent = await db.OutboxEvents.Include(e => e.DeliveryAttempts.OrderBy(a => a.Id)).SingleOrDefaultAsync(e => e.EventId == eventId, cancellationToken).ConfigureAwait(false);
         if (outboxEvent is null)
         {
             return null;

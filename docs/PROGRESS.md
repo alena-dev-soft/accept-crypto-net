@@ -7,10 +7,10 @@ Spec: `AcceptCrypto.NET_SPEC.md` (project file, not in the repo). Decisions: [DE
 - [x] **1. Solution skeleton, decision log, CI and progress file** (this file, DECISIONS.md, CI workflow in `docs/ci/ci.yml`, /health stub)
 - [x] **2. Domain: money (USDC base units), invoice aggregate, status machine incl. `cancelled`, unit tests** (see step notes, DECISIONS D11)
 - [x] **3. Persistence: PostgreSQL / EF Core, migrations, outbox, idempotency keys, optimistic concurrency** (see step notes, DECISIONS D12)
-- [ ] 4. Merchant API: create/get/list/cancel invoices, unmatched payments, resend event; API key auth, Problem Details, OpenAPI
+- [x] **4. Merchant API: create/get/list/cancel invoices, unmatched payments, resend event; API key auth, Problem Details, OpenAPI, config validation, SSRF guard, readiness checks** (see step notes, DECISIONS D15, API.md)
 - [x] **Local chain: Anvil, mock USDC, xpub derivation (former 5), scripted payer, chain test helpers** (see step notes, DECISIONS D13)
 - [x] **6. Chain scanner: eth_getLogs, checkpoint, chunking, confirmations, reorg handling, unmatched, expiry** (see step notes, DECISIONS D14)
-- [ ] 7. Webhooks: signing (HMAC-SHA256 over `{timestamp}.{body}`), dispatcher with backoff, secret rotation, SSRF guard
+- [ ] 7. Webhooks: signing (HMAC-SHA256 over `{timestamp}.{body}`), dispatcher with backoff, secret rotation (SSRF guard + options ready from step 4)
 - [ ] 8. Payment page: instructions + QR + live status
 - [ ] 9. SDK: DI registration, typed client, webhook verification, typed events, README, tests
 - [ ] 10. Demo shop (scripted payer and mock USDC are done in the local-chain step)
@@ -26,7 +26,7 @@ Requires the .NET 10 SDK (`global.json`: 10.0.x).
 ```bash
 dotnet build AcceptCrypto.NET.slnx
 dotnet test AcceptCrypto.NET.slnx
-dotnet run --project src/AcceptCrypto.Service      # GET /health -> "Healthy"
+dotnet run --project src/AcceptCrypto.Service      # Development: /health, /scalar, /v1/* (needs merchant config, see API.md)
 dotnet pack src/AcceptCrypto.Sdk -c Release -o artifacts   # AcceptCrypto.NET.<ver>.nupkg
 scripts/local-chain.sh                              # Anvil + mock USDC + funded payer (needs Foundry)
 dotnet run --project src/AcceptCrypto.Payer -- --help   # scripted payer
@@ -242,6 +242,73 @@ Notes for next steps:
   `Chain__StartBlock=0`; consider `anvil --block-time 1` so idle chains still advance block time. Testnet:
   `Chain__ChainId=84532`, Circle USDC address, `Confirmations` ≥ 3, `StartBlock` = a recent block, RPC URL as a secret.
 
+### Step 4 — merchant REST API (done)
+
+Reference: [API.md](API.md); decisions in DECISIONS.md **D15**.
+
+- Endpoints (`src/AcceptCrypto.Service/Api/MerchantApi.cs`, all under `/v1`, API key in `X-Api-Key`):
+  `POST /v1/invoices` (Idempotency-Key, 201/200-replay/422-reuse, payment details + `payment_page_url`),
+  `GET /v1/invoices/{id}` (transfers with confirmations + webhook events with delivery attempts),
+  `GET /v1/invoices` (status / created_from / created_to, keyset cursor, limit), `POST /v1/invoices/{id}/cancel`
+  (pending only, 409 otherwise, idempotent), `GET /v1/unmatched-payments` (cursor), `POST /v1/events/{id}/resend`
+  (202, same event ID/payload).
+- Configuration (FR-0), validated at startup without echoing values: `Merchant` (ApiKey, WebhookUrl, WebhookSecret,
+  PreviousWebhookSecret, Xpub — `MerchantOptions` + `MerchantOptionsValidator` in Infrastructure), `Invoices`
+  (min/max amount, default/min/max lifetime → `InvoicePolicy`), `Webhooks` (AllowedHosts, retry schedule, timeout),
+  `Api` (PublicBaseUrl, page sizes), `Chain` gained `NetworkName` and `TokenSymbol`. Service has a `UserSecretsId`.
+- Auth: `ApiKeyAuthenticationHandler` (constant-time compare, Problem Details challenge). Errors: Problem Details
+  everywhere (`code` + `trace_id`), `ApiExceptionHandler`, status-code pages. OpenAPI 3.1 at `/openapi/v1.json` with
+  the API key scheme, Scalar UI at `/scalar`.
+- SSRF: `WebhookUrlGuard` (Infrastructure/Webhooks): static check at startup, DNS check, and a guarded
+  `SocketsHttpHandler` (connect-time check, no redirects/proxy) for the step 7 dispatcher.
+- Health: `/health` unchanged (liveness + scanner), new `/health/ready` with `database` and `rpc` checks (JSON).
+  Logs: JSON console in Production, simple in Development; `LoggerMessage` events for create/replay/cancel/resend;
+  redacted startup configuration summary.
+- `IOutboxRepository.UpdateAsync` now loads the delivery attempts (the resend response shows the history).
+- Preview: `scripts/dev.sh` defaults `ASPNETCORE_ENVIRONMENT=Development` (throwaway merchant values in
+  `appsettings.Development.json`), because the service now refuses to start without merchant configuration.
+- Tests:
+  - `tests/AcceptCrypto.IntegrationTests/Api` — `ApiHarness` (real `Program` host via `WebApplicationFactory`, fresh
+    migrated PostgreSQL database per test, `FakeTimeProvider`, log capture). `MerchantApiTests` (46 cases): auth on
+    all 6 endpoints (missing / wrong key), health + OpenAPI + Scalar public, create (details, address = derivation,
+    link, no metadata in `payment`), idempotency (replay incl. equivalent body, reuse → 422, 10 parallel → 1 invoice,
+    failed request does not burn the key), 13 validation cases + 4 malformed bodies, details with transfers/events,
+    404s, pagination over 3 pages, status/date filters, invalid query params, cancel (once, 409 when confirming, 404),
+    unmatched list with cursor, resend keeps ID/payload/history, secrets absent from logs, the scripted payer's
+    `PaymentDetailsClient` reads `GET /v1/invoices/{id}`. `ConfigurationValidationTests` (24): every invalid setting
+    stops startup without leaking the value (incl. SSRF: 127.0.0.1, 169.254.169.254, 10/8, ::1, localhost, http,
+    credentials), allowlisted internal hosts accepted. `ServiceFactory` (scanner hosting tests) now adds the test
+    merchant settings.
+  - `tests/AcceptCrypto.Infrastructure.Tests/Webhooks/WebhookUrlGuardTests` (41): address classification (IPv4/IPv6
+    incl. mapped/NAT64/6to4), DNS answers (public / private / mixed / unresolvable / localhost), allowlist, and a real
+    local TCP server proving the guarded handler refuses loopback (also after DNS rebinding) and connects when
+    allowlisted.
+
+Verified: `dotnet test AcceptCrypto.NET.slnx` → 135 domain + 97 infrastructure + 1 SDK + 123 integration tests green
+(PostgreSQL via `ACCEPTCRYPTO_TEST_POSTGRES`, Anvil binary). Service in Development: `/health` Healthy, `/scalar`
+renders the API reference, a create → list → get round trip works against local PostgreSQL.
+
+Try it locally (PostgreSQL on localhost with postgres/postgres):
+
+```bash
+ASPNETCORE_ENVIRONMENT=Development Persistence__MigrateOnStartup=true dotnet run --project src/AcceptCrypto.Service
+curl -s -X POST http://localhost:5052/v1/invoices -H 'X-Api-Key: dev_api_key_00000000000000000000000000000' \
+  -H 'Idempotency-Key: demo-1' -H 'Content-Type: application/json' -d '{"amount":"25.50","external_order_id":"order-1"}'
+# open http://localhost:5052/scalar
+```
+
+Notes for next steps:
+- Webhooks (step 7): build the delivery `HttpClient` on `WebhookUrlGuard.CreateHttpHandler()` (and/or call
+  `CheckAsync` before each attempt; a refusal is a failed attempt with a clear `last_error`). Retry schedule:
+  `WebhookOptions` (`InitialRetryDelay` doubling to `MaxRetryDelay`, `MaxAttempts`, `RetryWindow`, `RequestTimeout`).
+  Secrets: `MerchantOptions.WebhookSecrets` (current first, previous during rotation).
+- Payment page (step 8): `payment_page_url` already points to `/pay/{token}`; the payer expects
+  `GET /api/public/invoices/{token}` returning the same `payment` object (no metadata / order ID).
+- SDK (step 9): the contracts are in `Api/Contracts.cs` and API.md; error `code`s are stable for typed exceptions.
+- Compose (step 11): set `Merchant__ApiKey`, `Merchant__WebhookSecret`, `Merchant__WebhookUrl=http://demo-shop:8080/…`,
+  `Merchant__Xpub`, `Webhooks__AllowedHosts__0=demo-shop`, `Api__PublicBaseUrl=http://localhost:<port>`; readiness
+  probe `/health/ready`.
+
 ## Open points
 
 - **CI activation (manual, owner):** the platform's GitHub token lacks the `workflow` scope, so the workflow cannot be
@@ -255,5 +322,4 @@ Notes for next steps:
   fingerprint (e.g. SHA-256 of the canonical create request) (step 6 done: `Chain:ChainId` feeds
   `Persistence:ChainId`, `InvoiceClosed` transfers are recorded as unmatched); step 7 claims due outbox rows
   (consider `FOR UPDATE SKIP LOCKED`) and should keep per-invoice event order; step 11 compose sets
-  `ConnectionStrings__AcceptCrypto` and `Persistence__MigrateOnStartup=true`. A DB health check (tagged "ready") is
-  still to be added once the stack has a database (keeps the Preview's `/health` green without one).
+  `ConnectionStrings__AcceptCrypto` and `Persistence__MigrateOnStartup=true`. DB/RPC readiness checks exist since step 4 (`/health/ready`).

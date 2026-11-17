@@ -256,7 +256,7 @@ internal static partial class MerchantApi
                 ApiErrorCodes.InvoiceNotCancellable,
                 "Invoice cannot be cancelled",
                 $"Only a pending invoice can be cancelled; this invoice is {currentStatus}.",
-                new Dictionary<string, object?> { ["status"] = currentStatus });
+                new Dictionary<string, object?> { ["current_status"] = currentStatus });
         }
 
         if (update is null)

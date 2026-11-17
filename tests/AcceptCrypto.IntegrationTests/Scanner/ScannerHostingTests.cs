@@ -113,7 +113,7 @@ internal static class ServiceFactory
         new WebApplicationFactory<Program>().WithWebHostBuilder(b =>
         {
             b.UseEnvironment("Testing");
-            foreach (var (key, value) in settings)
+            foreach (var (key, value) in Api.TestMerchant.Settings().Concat(settings))
             {
                 b.UseSetting(key, value);
             }
