@@ -19,5 +19,7 @@
     <PackageVersion Include="Microsoft.Extensions.Options.ConfigurationExtensions" Version="10.0.5" />
     <PackageVersion Include="Nethereum.Web3" Version="7.1.0" />
     <PackageVersion Include="Nethereum.HdWallet" Version="7.1.0" />
+    <PackageVersion Include="Microsoft.AspNetCore.OpenApi" Version="10.0.15" />
+    <PackageVersion Include="Scalar.AspNetCore" Version="3.0.0" />
   </ItemGroup>
 </Project>

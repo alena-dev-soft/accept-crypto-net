@@ -13,4 +13,6 @@ if ! command -v dotnet >/dev/null 2>&1 || ! dotnet --list-sdks | grep -q '^10\.'
 fi
 
 PORT="${PORT:-8080}"
+# The Preview has no secrets configured: run with the throwaway Development settings (appsettings.Development.json).
+export ASPNETCORE_ENVIRONMENT="${ASPNETCORE_ENVIRONMENT:-Development}"
 exec dotnet run --project src/AcceptCrypto.Service --no-launch-profile --urls "http://0.0.0.0:${PORT}"

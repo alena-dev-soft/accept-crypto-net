@@ -1,8 +1,21 @@
 <Project Sdk="Microsoft.NET.Sdk.Web">
 
+  <PropertyGroup>
+    <UserSecretsId>acceptcrypto-net-service</UserSecretsId>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.AspNetCore.OpenApi" />
+    <PackageReference Include="Scalar.AspNetCore" />
+  </ItemGroup>
+
   <ItemGroup>
     <ProjectReference Include="..\AcceptCrypto.Domain\AcceptCrypto.Domain.csproj" />
     <ProjectReference Include="..\AcceptCrypto.Infrastructure\AcceptCrypto.Infrastructure.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="AcceptCrypto.IntegrationTests" />
   </ItemGroup>
 
 </Project>

@@ -24,6 +24,12 @@ public sealed class ChainOptions
     /// <summary>ERC-20 token contract (6-decimal USDC or the local mock).</summary>
     public string? TokenAddress { get; set; }
 
+    /// <summary>Human-readable network name shown to the payer (FR-4), e.g. "Anvil (local)" or "Base Sepolia".</summary>
+    public string NetworkName { get; set; } = "Anvil (local)";
+
+    /// <summary>Token symbol shown to the payer (FR-4).</summary>
+    public string TokenSymbol { get; set; } = "USDC";
+
     /// <summary>
     /// N: a transfer is final when <c>head - block + 1 &gt;= N</c> (FR-7, D4). Must exceed any reorg depth you expect:
     /// a confirmed transfer is never reverted.
