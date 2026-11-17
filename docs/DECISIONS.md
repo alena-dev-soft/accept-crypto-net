@@ -17,6 +17,7 @@ New decisions are appended with the next number; a changed decision is marked *S
 | D9 | Deployment | Local (one command) by default; public testnet optional, following a guide |
 | D10 | Solution layout & tooling | .NET 10, layered projects, central package management, warnings as errors |
 | D11 | Domain model & edge cases | BigInteger base units; status derived from facts, walked along diagram edges; `expired → confirming` for on-time payments found late; late overpay → `paid_late` |
+| D13 | Local chain & derivation | Own minimal 6-decimal MockUsdc (artifact committed), deployed by the .NET payer at a fixed address; xpub at m/44'/60'/0'/0, child = invoice index; payer reads a public payment-details endpoint |
 
 ---
 
@@ -235,3 +236,47 @@ first request fails (validation), its key row is rolled back and the key can be 
 
 **Chain ID.** `Persistence:ChainId` (default 31337, Anvil) is stamped on stored transfers, unmatched payments and the
 checkpoint. Step 6 should source it from the chain configuration (one setting).
+
+## D13 — Local chain, mock USDC, xpub derivation and the scripted payer (step 4 of the plan: local chain)
+
+**Mock token.** `contracts/src/MockUsdc.sol` is an own minimal ERC-20 (6 decimals, open `mint` = test faucet, no
+external dependencies), compiled with solc 0.8.24 (optimizer 200, EVM cancun, no metadata hash). The artifact
+(ABI + creation bytecode) is committed as `src/AcceptCrypto.LocalChain/Contracts/MockUsdc.json` and embedded in the
+`AcceptCrypto.LocalChain` assembly, so **.NET users never need Foundry/solc**: `pay setup` deploys it via Nethereum.
+`scripts/build-contracts.sh` (forge + jq) regenerates the artifact when the Solidity changes.
+
+**Fixed token address.** The deployer is Anvil account #0 and the deployment is its first transaction on a fresh
+chain, so the token is always at `0x5FbDB2315678afecb367f032d93F642f64180aa3` (`AnvilAccounts.MockUsdcAddress`).
+The compose stack (step 11) can therefore configure the service with a constant. `pay setup` is idempotent (deploys
+only if there is no code at that address, then tops the payer up to 1,000,000 USDC) and fails clearly if the
+deployer was already used on that chain.
+
+**Accounts (TEST ONLY, public keys of Anvil's default mnemonic).** #0 deployer, #1 payer (pre-funded with ETH by
+Anvil, USDC by `pay setup`), #2 spare. The payer refuses to use the well-known key on any chain other than 31337.
+
+**Derivation.** `XpubDepositAddressDeriver` (Infrastructure, NBitcoin via Nethereum.HdWallet + Nethereum Keccak):
+the configured key (`Merchant:Xpub`) is the extended public key at **`m/44'/60'/0'/0`** (the "external chain" of the
+first Ethereum account, as used by MetaMask/Ledger Live); the deposit address of invoice index *i* is `xpub/i`,
+i.e. the wallet's account `m/44'/60'/0'/0/i`, so the merchant can import the same seed and see/move the funds.
+Only non-hardened indexes (0 … 2^31-1) are possible; an `xprv`/`tprv` is rejected without echoing it (NFR-5).
+Both `xpub` and `tpub` serialisations are accepted. The xpub is parsed lazily on first use, so the service starts
+without merchant configuration (Preview `/health`).
+Local/test merchant wallet: the public BIP39 test mnemonic `abandon … abandon about` →
+`xpub6EF8jXqF…CyPeBFFr` (in `appsettings.Development.json`). **Test only: anyone can spend from these addresses.**
+Reference values in the tests come from an independent implementation (`cast wallet address --mnemonic-index`).
+
+**Payer ↔ service contract (to be implemented by the API/payment-page steps).** The payer resolves `<invoice>` as:
+- a payment page URL `http(s)://host[/prefix]/pay/{token}` → `GET {host[/prefix]}/api/public/invoices/{token}`;
+- a GUID → merchant API `GET /v1/invoices/{id}` with header `X-Api-Key`;
+- anything else → a public token on `--service` (default `http://localhost:5052`).
+
+The JSON it reads (snake_case, the FR-4 payment details): required `address` (or `deposit_address`) and `amount`
+(decimal string); optional `chain_id` (checked against the RPC chain), `token_address` (overrides the default token),
+`status`, `expires_at`; the fields may also be nested under `payment`. If the API steps choose other routes or
+names, adjust `InvoiceReference`/`PaymentDetailsClient` in the payer (unit tests in `PayerLogicTests`).
+
+**Reorg / time helpers.** `AnvilClient.ReorgAsync(depth)` uses `anvil_reorg(depth, [])`: the last *depth* blocks are
+replaced by blocks of the same height with new hashes and **without** the original transactions (verified: the
+transfer's receipt disappears, the balance goes back). `ReorgToSnapshotAsync` is the `evm_snapshot`/`evm_revert`
+alternative. Time warp = `evm_increaseTime` + mine (or `evm_setNextBlockTimestamp`); this moves **block
+timestamps** (the on-time rule), while the service's own clock is a `TimeProvider` that tests fake separately.

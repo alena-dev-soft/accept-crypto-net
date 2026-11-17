@@ -8,12 +8,12 @@ Spec: `AcceptCrypto.NET_SPEC.md` (project file, not in the repo). Decisions: [DE
 - [x] **2. Domain: money (USDC base units), invoice aggregate, status machine incl. `cancelled`, unit tests** (see step notes, DECISIONS D11)
 - [x] **3. Persistence: PostgreSQL / EF Core, migrations, outbox, idempotency keys, optimistic concurrency** (see step notes, DECISIONS D12)
 - [ ] 4. Merchant API: create/get/list/cancel invoices, unmatched payments, resend event; API key auth, Problem Details, OpenAPI
-- [ ] 5. xpub address derivation (BIP32 non-hardened → EIP-55 address)
+- [x] **Local chain: Anvil, mock USDC, xpub derivation (former 5), scripted payer, chain test helpers** (see step notes, DECISIONS D13)
 - [ ] 6. Chain scanner: eth_getLogs, checkpoint, chunking, confirmations, reorg handling, expiry
 - [ ] 7. Webhooks: signing (HMAC-SHA256 over `{timestamp}.{body}`), dispatcher with backoff, secret rotation, SSRF guard
 - [ ] 8. Payment page: instructions + QR + live status
 - [ ] 9. SDK: DI registration, typed client, webhook verification, typed events, README, tests
-- [ ] 10. Demo shop + scripted payer (`pay <invoice>`) + mock USDC on Anvil
+- [ ] 10. Demo shop (scripted payer and mock USDC are done in the local-chain step)
 - [ ] 11. One-command stack (docker compose), integration tests (Testcontainers, forced reorg), S1–S7
 - [ ] 12. README packaging (GIF, architecture diagram, "hard parts" section), testnet guide, PR
 
@@ -28,6 +28,8 @@ dotnet build AcceptCrypto.NET.slnx
 dotnet test AcceptCrypto.NET.slnx
 dotnet run --project src/AcceptCrypto.Service      # GET /health -> "Healthy"
 dotnet pack src/AcceptCrypto.Sdk -c Release -o artifacts   # AcceptCrypto.NET.<ver>.nupkg
+scripts/local-chain.sh                              # Anvil + mock USDC + funded payer (needs Foundry)
+dotnet run --project src/AcceptCrypto.Payer -- --help   # scripted payer
 ```
 
 Tree Work Preview runs `npm install && npm run dev`: `package.json` → `scripts/dev.sh`, which installs the
@@ -127,6 +129,65 @@ ACCEPTCRYPTO_DESIGN_CONNECTION="Host=localhost;Database=acceptcrypto;Username=po
   dotnet ef database update --project src/AcceptCrypto.Infrastructure
 # or run the service with Persistence__MigrateOnStartup=true
 ```
+
+### Step 4 — local chain: Anvil, mock USDC, xpub derivation, scripted payer (done)
+
+Decisions in DECISIONS.md **D13**. (The plan's step 4 "Merchant API" is still open; this step took over the former
+step 5 and the payer/mock-USDC part of step 10.)
+
+- **Mock USDC**: `contracts/src/MockUsdc.sol` (minimal ERC-20, 6 decimals, open `mint`), compiled artifact committed
+  at `src/AcceptCrypto.LocalChain/Contracts/MockUsdc.json` (embedded resource). Regenerate with
+  `scripts/build-contracts.sh` (Foundry + jq) — only when the `.sol` changes.
+- **`src/AcceptCrypto.LocalChain`** (TEST/DEV only, never referenced by the service): `AnvilAccounts` (well-known keys,
+  fixed token address `0x5FbDB2315678afecb367f032d93F642f64180aa3`), `MockUsdc` (deploy / `EnsureDeployedAsync` /
+  mint / transfer / balance, Nethereum typed messages, `TransferEventDto`), `AnvilClient` (block number/info, receipt,
+  `MineAsync`, `SetAutomineAsync`, `SnapshotAsync`/`RevertAsync`, **`ReorgAsync(depth)`** via `anvil_reorg`,
+  `ReorgToSnapshotAsync`, **`WarpAsync`** (time warp) and `SetNextBlockTimestampAsync`), `PaymentPlan.Split`.
+- **Derivation** (Infrastructure, `Chain/XpubDepositAddressDeriver.cs`): `IDepositAddressDeriver.DeriveAddress(index)`
+  → EIP-55 address of `xpub/index`; `AddAcceptCryptoDepositAddresses(configuration)` (section `Merchant:Xpub`) is
+  registered in the service. Test xpub (public "abandon … about" mnemonic, TEST ONLY) in `appsettings.Development.json`.
+- **Scripted payer** `src/AcceptCrypto.Payer` (assembly `pay`):
+
+  ```bash
+  pay setup                                  # deploy mock USDC (if missing) + mint 1,000,000 USDC to the payer
+  pay <invoice> [--amount X] [--split N]     # <invoice> = http://host/pay/<token> | <token> | <invoice GUID> (+ --api-key)
+  pay --to <address> --amount X [--split N]  # any address, e.g. an unmatched transfer (S7)
+  pay balance [address] | pay mine [n] | pay reorg <depth> | pay warp <seconds>
+  # options/env: --rpc ACCEPTCRYPTO_RPC_URL, --token ACCEPTCRYPTO_TOKEN_ADDRESS, --service ACCEPTCRYPTO_SERVICE_URL,
+  #              --api-key ACCEPTCRYPTO_API_KEY, --private-key PAYER_PRIVATE_KEY
+  ```
+  Run with `dotnet run --project src/AcceptCrypto.Payer -- <args>`. Underpay/overpay = `--amount`, partial = `--split`
+  (parts add up exactly). The payer checks the invoice's `chain_id` against the RPC and never uses the well-known key
+  off chain 31337. Expected service endpoints/JSON: see D13 ("Payer ↔ service contract").
+- **Tests**:
+  - `tests/AcceptCrypto.Infrastructure.Tests` (new, unit): derivation vs. reference addresses from Foundry's `cast`
+    (merchant test xpub, Anvil accounts), public vs. private-key derivation cross-check, determinism, tpub,
+    index range, xprv rejection, bad input; payer logic (split, command line, invoice reference, payment-details JSON,
+    embedded artifact). 52 tests.
+  - `tests/AcceptCrypto.IntegrationTests/Chain` (real Anvil, collection `anvil`, chain reset per test):
+    deploy/decimals/funding, Transfer log found by `eth_getLogs` filtered on `to`, **forced reorg** (`anvil_reorg`) and
+    snapshot reorg remove the transfer and change the block hash, manual mining & confirmations, time warp; scripted
+    payer end to end against a stub of the public payment-details endpoint (exact / split / under / over / `--to` /
+    wrong chain / 404 / mine-reorg-warp commands). 14 tests.
+  - `AnvilFixture` picks Anvil from `ACCEPTCRYPTO_TEST_ANVIL_RPC` (existing node — it is reset!), else an `anvil`
+    binary (PATH, `~/.foundry/bin`, `ACCEPTCRYPTO_TEST_ANVIL_BIN`) on a free port, else Testcontainers
+    `ghcr.io/foundry-rs/foundry:latest`. Verified here with Foundry 1.9.0 (anvil binary); the container path is
+    untested (no Docker in the agent container). `docs/ci/ci.yml` now installs Foundry (`foundry-rs/foundry-toolchain@v1`).
+  - Gotcha: after `anvil_reset` create a new Nethereum `Web3`/`Account` — a reused one can send with a stale nonce and
+    hang waiting for a receipt (the fixture does this).
+
+Verified: `dotnet test AcceptCrypto.NET.slnx` → 135 domain + 52 infrastructure + 1 SDK + 38 integration tests green
+(PostgreSQL via `ACCEPTCRYPTO_TEST_POSTGRES`, Anvil binary); `scripts/local-chain.sh` deploys the token and funds the payer;
+`pay --to … --split 3`, `mine`, `reorg`, `warp` checked by hand.
+
+Notes for next steps:
+- Merchant API / payment page: implement `GET /api/public/invoices/{token}` (and `GET /v1/invoices/{id}` with
+  `X-Api-Key`) with the fields in D13, or adjust the payer. Allocate the invoice address with
+  `IDepositAddressDeriver.DeriveAddress(nextval(invoice_derivation_index_seq))`.
+- Scanner: token address for local = `AnvilAccounts.MockUsdcAddress`; use `AnvilClient.ReorgAsync` + `MineAsync` in
+  the FR-10 test and `WarpAsync`/`SetNextBlockTimestampAsync` for late payments (block timestamp rule).
+- Compose (step 11): Anvil container (`ghcr.io/foundry-rs/foundry`, `anvil --host 0.0.0.0`) + a one-shot
+  `pay setup` container (or the service's startup) before the demo; service config `Merchant__Xpub` = the test xpub.
 
 ## Open points
 
