@@ -6,7 +6,7 @@ Spec: `AcceptCrypto.NET_SPEC.md` (project file, not in the repo). Decisions: [DE
 
 - [x] **1. Solution skeleton, decision log, CI and progress file** (this file, DECISIONS.md, CI workflow in `docs/ci/ci.yml`, /health stub)
 - [x] **2. Domain: money (USDC base units), invoice aggregate, status machine incl. `cancelled`, unit tests** (see step notes, DECISIONS D11)
-- [ ] 3. Infrastructure: PostgreSQL / EF Core, migrations, outbox, idempotency keys
+- [x] **3. Persistence: PostgreSQL / EF Core, migrations, outbox, idempotency keys, optimistic concurrency** (see step notes, DECISIONS D12)
 - [ ] 4. Merchant API: create/get/list/cancel invoices, unmatched payments, resend event; API key auth, Problem Details, OpenAPI
 - [ ] 5. xpub address derivation (BIP32 non-hardened → EIP-55 address)
 - [ ] 6. Chain scanner: eth_getLogs, checkpoint, chunking, confirmations, reorg handling, expiry
@@ -77,6 +77,57 @@ Notes for next steps:
 - Step 6 (scanner): call `RecordTransfer` then `ConfirmTransfer` in the same transaction when a transfer is
   already deep enough; run `CheckDeadline` only once the scanner has caught up past the deadline.
 
+### Step 3 — persistence (done)
+
+All in `src/AcceptCrypto.Infrastructure/Persistence`, decisions in DECISIONS.md **D12**.
+
+- `AcceptCryptoDbContext` (EF Core 10 + Npgsql, snake_case): invoices (+ owned `observed_transfers`), unmatched
+  payments, outbox events + delivery attempts, scanner checkpoints, idempotency keys, derivation-index sequence.
+  Amounts `numeric(78,0)` base units; timestamps `timestamptz` (normalised to UTC); metadata `jsonb`.
+- Migration `InitialSchema` (generated; analyzers disabled for `Persistence/Migrations` in `.editorconfig`).
+- Repositories (singletons over `IDbContextFactory`): `IInvoiceRepository` (`CreateAsync` idempotent create,
+  `GetAsync`, `GetByPublicTokenAsync`, `FindByDepositAddressAsync`, `ListDueForExpiryAsync`, keyset `ListAsync`,
+  **`UpdateAsync` = unit of work: domain op + outbox in one transaction, optimistic concurrency retry**),
+  `IUnmatchedPaymentRepository` (idempotent insert, list), `IScannerCheckpointRepository` (upsert),
+  `IOutboxRepository` (due list, per-invoice history, xmin-guarded update). Entities `OutboxEvent`
+  (`RecordSuccess/RecordFailure/Resend`), `WebhookDeliveryAttempt`, `UnmatchedPayment`, `ScannerCheckpoint`.
+  `OutboxEventFactory` builds the webhook JSON payload.
+- Domain change: `ObservedTransfer` stores `TxHash` + `LogIndex` (persisted columns); `Id` is now computed from them.
+- Service: `AddAcceptCryptoPersistence(configuration)` in `Program.cs` (connection string
+  `ConnectionStrings:AcceptCrypto`, section `Persistence`: `ChainId`, `MaxConcurrencyRetries`, `MigrateOnStartup`).
+  Nothing connects until first use, so `/health` and the Preview work without a database.
+  `appsettings.Development.json` has a local-dev connection string (postgres/postgres on localhost, throwaway).
+- Integration tests (`tests/AcceptCrypto.IntegrationTests/Persistence`, 23 tests; 24 with `/health`): idempotent create (replay,
+  different body, 16 parallel requests → 1 invoice, rejected request does not burn the key), duplicate transfer
+  (re-record, 8 parallel records → 1 row, DB unique constraint, unmatched dedupe incl. uint256 max amount),
+  concurrency (stale writer conflicts even when only transfers changed; parallel confirmations → exactly one
+  `invoice.paid`; cancel vs. payment race), outbox atomicity (causal order + payload, injected failure on the outbox
+  insert rolls back the status change, domain error saves nothing, delivery history + resend keeps event ID,
+  xmin conflict), list pagination/filters, expiry query, checkpoint upsert, migrations fully applied.
+  Verified that disabling the aggregate version bump makes the concurrency tests fail.
+
+How to run the integration tests:
+
+```bash
+dotnet test AcceptCrypto.NET.slnx          # Testcontainers starts postgres:17-alpine (needs Docker, as in CI)
+# without Docker: point at any PostgreSQL server where the user may CREATE DATABASE
+ACCEPTCRYPTO_TEST_POSTGRES="Host=localhost;Username=postgres;Password=postgres;Database=postgres" dotnet test AcceptCrypto.NET.slnx
+```
+
+Each test creates and migrates its own database (`test_<guid>`) and drops it afterwards.
+The agent container has no Docker, so this step was verified with a local PostgreSQL 15 through
+`ACCEPTCRYPTO_TEST_POSTGRES`; the Testcontainers path runs in CI.
+
+Migrations:
+
+```bash
+dotnet tool restore
+dotnet ef migrations add <Name> --project src/AcceptCrypto.Infrastructure --output-dir Persistence/Migrations
+ACCEPTCRYPTO_DESIGN_CONNECTION="Host=localhost;Database=acceptcrypto;Username=postgres;Password=postgres" \
+  dotnet ef database update --project src/AcceptCrypto.Infrastructure
+# or run the service with Persistence__MigrateOnStartup=true
+```
+
 ## Open points
 
 - **CI activation (manual, owner):** the platform's GitHub token lacks the `workflow` scope, so the workflow cannot be
@@ -86,3 +137,9 @@ Notes for next steps:
 - CI badge added to README (repo: github.com/alena-dev-soft/accept-crypto-net).
 - Exact default N confirmations per chain (D4) is set when the scanner is built.
 - Payment page UI technology (D8) is chosen in step 8.
+- Step 3 follow-ups: step 4 maps `KeyReusedWithDifferentRequest` to a Problem Details error and computes the request
+  fingerprint (e.g. SHA-256 of the canonical create request); step 6 sources `Persistence:ChainId` from the chain
+  config and records `InvoiceClosed` transfers via `IUnmatchedPaymentRepository`; step 7 claims due outbox rows
+  (consider `FOR UPDATE SKIP LOCKED`) and should keep per-invoice event order; step 11 compose sets
+  `ConnectionStrings__AcceptCrypto` and `Persistence__MigrateOnStartup=true`. A DB health check (tagged "ready") is
+  still to be added once the stack has a database (keeps the Preview's `/health` green without one).

@@ -22,7 +22,8 @@ public sealed class ObservedTransfer
 {
     internal ObservedTransfer(ChainTransfer transfer, bool isOnTime, DateTimeOffset now)
     {
-        Id = transfer.Id;
+        TxHash = transfer.Id.TxHash;
+        LogIndex = transfer.Id.LogIndex;
         From = transfer.From;
         Amount = transfer.Amount;
         SeenAt = now;
@@ -36,7 +37,13 @@ public sealed class ObservedTransfer
     }
 
     /// <summary>Transaction hash + log index.</summary>
-    public TransferId Id { get; private set; }
+    public TransferId Id => new(TxHash, LogIndex);
+
+    /// <summary>Transaction hash (lower case); with <see cref="LogIndex"/> it identifies the transfer.</summary>
+    public string TxHash { get; private set; }
+
+    /// <summary>Index of the <c>Transfer</c> log within the block.</summary>
+    public int LogIndex { get; private set; }
 
     /// <summary>Sender address (lower case).</summary>
     public string From { get; private set; }

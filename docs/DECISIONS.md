@@ -188,3 +188,50 @@ a UUIDv7 `EventId`. One operation may return several events; their list order is
 **Deposit address** is validated and stored lower case; EIP-55 casing is presentation (step 5).
 **Clock.** `Invoice.Create` takes a `TimeProvider`; operations take `now` explicitly, so the caller decides which
 clock applies (tests use `FakeTimeProvider`).
+
+## D12 — Persistence, outbox, idempotency and concurrency (step 3)
+
+**Stack.** EF Core 10 + Npgsql, snake_case names (`EFCore.NamingConventions`), migrations in
+`src/AcceptCrypto.Infrastructure/Persistence/Migrations` (local tool `dotnet-ef`, manifest `dotnet-tools.json`).
+Repositories are singletons built on `IDbContextFactory`: every call uses its own short-lived context, so they are
+thread-safe and usable from API requests and `BackgroundService` workers alike.
+
+**Tables.** `invoices` (+ `version` concurrency token), `observed_transfers` (owned by the invoice aggregate,
+unique `(chain_id, tx_hash, log_index)` — FR-8), `unmatched_payments` (same unique key, FR-11a),
+`scanner_checkpoints` (one row per chain, block number + hash — FR-9), `outbox_events` + `webhook_delivery_attempts`
+(FR-14/15/19), `idempotency_keys` (FR-2), sequence `invoice_derivation_index_seq` (BIP32 child index = invoice number).
+
+**Money (NFR-1).** `numeric(78,0)` in token base units (fits uint256), mapped `UsdcAmount ↔ BigInteger`; no
+floating point anywhere. Check constraints keep invoice/transfer amounts positive.
+
+**Concurrency (NFR-3): optimistic concurrency with retry**, not `SELECT … FOR UPDATE`.
+- `invoices.version` is an explicit integer concurrency token. The DbContext bumps it on **every** change of the
+  aggregate — also when only a child transfer row is added/changed and the invoice row itself is unchanged. Without
+  that, two workers confirming two different transfers of one invoice would both commit on stale totals and the
+  invoice would never reach `paid` (test: `ConcurrencyTests.Parallel_confirmations_settle_to_the_correct_final_status`).
+- `IInvoiceRepository.UpdateAsync(id, mutate)` is the unit of work: load → apply the domain operation → save; on
+  `DbUpdateConcurrencyException` (or a unique violation from a parallel insert of the same transfer) it reloads and
+  re-applies, up to `Persistence:MaxConcurrencyRetries` (default 5). Domain operations are pure state transitions,
+  so re-running them on fresh state is safe.
+- Why not row locks: contention per invoice is rare (scanner, expiry worker, API cancel), optimistic checks keep
+  transactions short and lock-free, and work the same through EF without raw SQL. Row locks stay an option for the
+  dispatcher claiming outbox rows (`FOR UPDATE SKIP LOCKED`, step 7).
+- `outbox_events` uses PostgreSQL `xmin` as its row version (single-row updates by the dispatcher/API).
+
+**Outbox (NFR-2).** `UpdateAsync` adds one `outbox_events` row per domain event to the same context, so a single
+`SaveChanges` — one transaction — writes the invoice row, its transfers and the events. The identity column `id`
+keeps the causal order of events from one operation. The payload is the final webhook JSON
+(`{"id","type","created_at","data":{...}}`, snake_case, amounts as decimal strings), stored as `text` so the
+exact bytes are signed and resent (FR-15 keeps event ID and payload). Status/attempts/`next_attempt_at`/
+`delivered_at`/`last_error` on the row, every HTTP attempt in `webhook_delivery_attempts`. A manual resend resets
+the retry budget, keeps the history.
+
+**Idempotency (FR-2).** `CreateAsync(key, fingerprint, factory)` runs in one transaction:
+`INSERT INTO idempotency_keys … ON CONFLICT DO NOTHING`. A concurrent request with the same key blocks on the
+uncommitted row and, after the first commits, sees the conflict and returns the original invoice (`Replayed`), or
+`KeyReusedWithDifferentRequest` if the request fingerprint differs (the API maps that to 409/422 in step 4). If the
+first request fails (validation), its key row is rolled back and the key can be reused. Keys are kept forever
+(single merchant, small volume). `nextval` gaps after rollbacks only mean unused deposit addresses.
+
+**Chain ID.** `Persistence:ChainId` (default 31337, Anvil) is stamped on stored transfers, unmatched payments and the
+checkpoint. Step 6 should source it from the chain configuration (one setting).
