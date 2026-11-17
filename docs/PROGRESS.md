@@ -4,7 +4,7 @@ Spec: `AcceptCrypto.NET_SPEC.md` (project file, not in the repo). Decisions: [DE
 
 ## Plan
 
-- [x] **1. Solution skeleton, decision log, CI and progress file** (this file, DECISIONS.md, ci.yml, /health stub)
+- [x] **1. Solution skeleton, decision log, CI and progress file** (this file, DECISIONS.md, CI workflow in `docs/ci/ci.yml`, /health stub)
 - [ ] 2. Domain: money (USDC base units), invoice aggregate, status machine incl. `cancelled`, unit tests
 - [ ] 3. Infrastructure: PostgreSQL / EF Core, migrations, outbox, idempotency keys
 - [ ] 4. Merchant API: create/get/list/cancel invoices, unmatched payments, resend event; API key auth, Problem Details, OpenAPI
@@ -33,7 +33,7 @@ dotnet pack src/AcceptCrypto.Sdk -c Release -o artifacts   # AcceptCrypto.NET.<v
 Tree Work Preview runs `npm install && npm run dev`: `package.json` → `scripts/dev.sh`, which installs the
 .NET 10 SDK into `~/.dotnet` if missing and runs the service on `0.0.0.0:$PORT`.
 
-CI: `.github/workflows/ci.yml` — restore, build (Release), test (trx + coverage), pack SDK, on every push/PR.
+CI: workflow file is stored at `docs/ci/ci.yml` (see open points) — restore, build (Release), test (trx + coverage), pack SDK, on every push/PR.
 Runs on `ubuntu-latest` (Docker available for Testcontainers).
 
 ## Step notes
@@ -50,6 +50,10 @@ Runs on `ubuntu-latest` (Docker available for Testcontainers).
   `GenerateDocumentationFile` stays on everywhere so IDE0005 (unused usings) is enforced on build.
 
 ## Open points
+
+- **CI activation (manual, owner):** the platform's GitHub token lacks the `workflow` scope, so the workflow cannot be
+  pushed to `.github/workflows/`. The owner copies `docs/ci/ci.yml` to `.github/workflows/ci.yml` on GitHub.
+  Agents must not commit files under `.github/workflows/` (the push is rejected). The README badge points to `ci.yml`.
 
 - CI badge added to README (repo: github.com/alena-dev-soft/accept-crypto-net).
 - Exact default N confirmations per chain (D4) is set when the scanner is built.
