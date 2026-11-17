@@ -1,3 +1,4 @@
+using AcceptCrypto.Domain.Chain;
 using AcceptCrypto.Domain.Invoices;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
@@ -66,6 +67,15 @@ public interface IInvoiceRepository
     /// <summary>IDs of open invoices (pending/underpaid) whose deadline has passed, oldest first.</summary>
     Task<IReadOnlyList<Guid>> ListDueForExpiryAsync(DateTimeOffset now, int limit, CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// Every deposit address ever issued (lower case). The chain scanner watches all of them: open invoices for
+    /// payments, closed ones to record late money as unmatched (FR-11a).
+    /// </summary>
+    Task<IReadOnlyList<string>> ListDepositAddressesAsync(CancellationToken cancellationToken = default);
+
+    /// <summary>Transfers seen on-chain but not yet confirmed (state Seen), oldest block first, for reorg checks and confirmation.</summary>
+    Task<IReadOnlyList<UnconfirmedTransfer>> ListUnconfirmedTransfersAsync(CancellationToken cancellationToken = default);
+
     /// <summary>Cursor-paginated invoice list, newest first (FR-18).</summary>
     Task<InvoicePage> ListAsync(InvoiceListQuery query, CancellationToken cancellationToken = default);
 
@@ -80,11 +90,15 @@ public interface IInvoiceRepository
     Task<InvoiceUpdate<T>?> UpdateAsync<T>(Guid id, Func<Invoice, InvoiceMutation<T>> mutate, CancellationToken cancellationToken = default);
 }
 
+/// <summary>A not yet confirmed transfer of an invoice, as stored (block hash at the time it was seen).</summary>
+public sealed record UnconfirmedTransfer(Guid InvoiceId, TransferId TransferId, long BlockNumber, string BlockHash);
+
 /// <summary>EF Core / PostgreSQL implementation. Each call uses its own short-lived context, so it is thread-safe.</summary>
 public sealed class InvoiceRepository(IDbContextFactory<AcceptCryptoDbContext> contextFactory, IOptions<PersistenceOptions> options, TimeProvider clock)
     : IInvoiceRepository
 {
     private readonly int _maxRetries = options?.Value.MaxConcurrencyRetries ?? throw new ArgumentNullException(nameof(options));
+    private readonly long _chainId = options.Value.ChainId;
 
     /// <inheritdoc />
     public async Task<InvoiceCreateResult> CreateAsync(
@@ -184,6 +198,26 @@ public sealed class InvoiceRepository(IDbContextFactory<AcceptCryptoDbContext> c
             .Select(i => i.Id)
             .Take(limit)
             .ToListAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <inheritdoc />
+    public async Task<IReadOnlyList<string>> ListDepositAddressesAsync(CancellationToken cancellationToken = default)
+    {
+        await using var db = await contextFactory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+        return await db.Invoices.AsNoTracking().Select(i => i.DepositAddress).ToListAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <inheritdoc />
+    public async Task<IReadOnlyList<UnconfirmedTransfer>> ListUnconfirmedTransfersAsync(CancellationToken cancellationToken = default)
+    {
+        await using var db = await contextFactory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+        var rows = await db.Invoices.AsNoTracking()
+            .SelectMany(i => i.Transfers
+                .Where(t => t.State == TransferState.Seen && EF.Property<long>(t, AcceptCryptoDbContext.ChainIdProperty) == _chainId)
+                .Select(t => new { InvoiceId = i.Id, t.TxHash, t.LogIndex, t.BlockNumber, t.BlockHash }))
+            .OrderBy(t => t.BlockNumber).ThenBy(t => t.TxHash).ThenBy(t => t.LogIndex)
+            .ToListAsync(cancellationToken).ConfigureAwait(false);
+        return rows.ConvertAll(r => new UnconfirmedTransfer(r.InvoiceId, new TransferId(r.TxHash, r.LogIndex), r.BlockNumber, r.BlockHash));
     }
 
     /// <inheritdoc />

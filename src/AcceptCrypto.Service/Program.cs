@@ -1,4 +1,5 @@
 using AcceptCrypto.Infrastructure.Chain;
+using AcceptCrypto.Infrastructure.Chain.Scanning;
 using AcceptCrypto.Infrastructure.Persistence;
 using Microsoft.Extensions.Options;
 
@@ -7,6 +8,7 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddHealthChecks();
 builder.Services.AddAcceptCryptoPersistence(builder.Configuration);
 builder.Services.AddAcceptCryptoDepositAddresses(builder.Configuration);
+builder.Services.AddAcceptCryptoChainScanner(builder.Configuration);
 
 var app = builder.Build();
 
