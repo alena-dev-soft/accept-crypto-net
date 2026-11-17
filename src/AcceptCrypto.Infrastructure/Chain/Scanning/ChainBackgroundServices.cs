@@ -127,8 +127,6 @@ public static class Backoff
 /// </summary>
 public sealed class ChainScannerHealthCheck(ChainScanState state, IOptions<ChainOptions> options, TimeProvider clock) : IHealthCheck
 {
-    private readonly DateTimeOffset _startedAt = clock.GetUtcNow();
-
     /// <inheritdoc />
     public Task<HealthCheckResult> CheckHealthAsync(HealthCheckContext context, CancellationToken cancellationToken = default)
     {
@@ -139,7 +137,7 @@ public sealed class ChainScannerHealthCheck(ChainScanState state, IOptions<Chain
             ["lag_blocks"] = state.LagBlocks ?? -1,
             ["consecutive_failures"] = state.ConsecutiveFailures,
         };
-        var lastSuccess = state.LastSuccessAt ?? _startedAt;
+        var lastSuccess = state.LastSuccessAt ?? state.CreatedAt;
         var result = clock.GetUtcNow() - lastSuccess > options.Value.StaleAfter
             ? HealthCheckResult.Degraded("No successful chain scan pass recently.", data: data)
             : HealthCheckResult.Healthy("Chain scanner running.", data);

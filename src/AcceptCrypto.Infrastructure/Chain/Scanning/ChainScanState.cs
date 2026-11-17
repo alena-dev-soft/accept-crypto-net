@@ -24,9 +24,11 @@ public sealed class ChainScanState
     private int _consecutiveFailures;
 
     /// <summary>Creates the state and its instruments.</summary>
-    public ChainScanState(IMeterFactory meterFactory)
+    public ChainScanState(IMeterFactory meterFactory, TimeProvider clock)
     {
         ArgumentNullException.ThrowIfNull(meterFactory);
+        ArgumentNullException.ThrowIfNull(clock);
+        CreatedAt = clock.GetUtcNow();
         var meter = meterFactory.Create(MeterName);
         meter.CreateObservableGauge("acceptcrypto.scanner.lag_blocks", () => LagBlocks ?? 0, "{block}", "Blocks between the chain head and the last scanned block.");
         meter.CreateObservableGauge("acceptcrypto.scanner.head_block", () => Head ?? 0, "{block}", "Latest chain head seen by the scanner.");
@@ -35,6 +37,9 @@ public sealed class ChainScanState
         _reorgs = meter.CreateCounter<long>("acceptcrypto.scanner.reorgs", "{reorg}", "Chain reorganisations detected.");
         _failures = meter.CreateCounter<long>("acceptcrypto.scanner.failed_passes", "{pass}", "Scan passes that failed (RPC or database errors).");
     }
+
+    /// <summary>When the scanner state was created (service start).</summary>
+    public DateTimeOffset CreatedAt { get; }
 
     /// <summary>Latest head block number seen.</summary>
     public long? Head { get { lock (_lock) { return _head; } } }

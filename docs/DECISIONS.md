@@ -280,3 +280,74 @@ replaced by blocks of the same height with new hashes and **without** the origin
 transfer's receipt disappears, the balance goes back). `ReorgToSnapshotAsync` is the `evm_snapshot`/`evm_revert`
 alternative. Time warp = `evm_increaseTime` + mine (or `evm_setNextBlockTimestamp`); this moves **block
 timestamps** (the on-time rule), while the service's own clock is a `TimeProvider` that tests fake separately.
+
+## D14 — Chain scanner: detection, confirmations, reorgs, unmatched, expiry (step 6)
+
+Code: `src/AcceptCrypto.Infrastructure/Chain/Scanning`. Configuration section `Chain` (`ChainOptions`).
+
+**Log filter: `eth_getLogs` filtered on the recipient topic, not in-memory filtering.** The filter is
+`address = token, topics = [Transfer, null, [to₁ … toₖ]]`, with the deposit addresses OR-ed in batches of
+`MaxAddressesPerQuery` (default 100). Why: on a public testnet/mainnet the USDC contract emits thousands of transfers
+per block range that are not ours; filtering on the node keeps responses tiny and the block range per request large,
+which matters with free-tier RPC limits. In-memory filtering only wins with a huge address set — then the batches
+multiply. With one merchant and a modest number of invoices the filter is the better trade-off; the roadmap item is to
+stop watching addresses of invoices closed longer than a retention window (today **all** issued addresses are watched,
+because late money to a closed invoice must be recorded as unmatched, FR-11a). Consequence: transfers to addresses that
+are not deposit addresses are never seen, so `UnmatchedReason.UnknownAddress` is unreachable with this filter (kept for
+an in-memory variant).
+
+**No missed invoices.** Each pass reads the head *first* and the address list *second*. An invoice missing from the
+list was created after the head was read, so its deposit address can only receive money in a later block, scanned in
+a later pass.
+
+**Pass algorithm** (`ChainScanner.RunPassAsync`; the `ChainScannerService` loops it):
+1. Verify `eth_chainId` = `Chain:ChainId` once per process (refuses to scan the wrong chain).
+2. Head → checkpoint check: the stored hash of the checkpoint block is compared with the canonical one. Mismatch (or
+   the chain got shorter) = reorg → checkpoint rolled back by `ReorgRollbackDepth` (default 32) and persisted.
+3. Unconfirmed transfers (state Seen): for each, a **fresh** `eth_getBlockByNumber` of its block. Different hash →
+   `RevertTransfer` (domain emits `payment.reverted` + the status edge back) and the next scan starts
+   `ReorgRollbackDepth` below that block, so a transaction re-included in another block is found again and reinstated.
+   Same hash and `head - block + 1 >= N` → `ConfirmTransfer`. A missing block (lagging node) or a block above the head
+   is *not* treated as a reorg: only positive evidence reverts, and nothing is confirmed without a matching hash.
+4. Scan `[checkpoint+1, head]` in chunks of `MaxBlockRange` (default 500); if the node rejects a range with a JSON-RPC
+   error (range/result limits), the range is halved down to one block. Per log: skip `removed` and zero-value logs,
+   fetch the block (timestamp + hash must match the log's block hash, otherwise abort the pass and retry), build a
+   `ChainTransfer`, find the invoice by deposit address, `RecordTransfer` — and, if the transfer is already N deep
+   (catch-up after downtime), `ConfirmTransfer` **in the same transaction**. `InvoiceClosed` → unmatched payment with
+   reason `InvoiceClosed` and the invoice ID. The checkpoint (block + hash, hash read *before* the logs) is saved after
+   every chunk, so a crash loses at most one chunk of work, which is redone idempotently.
+
+**Idempotency (FR-8).** The domain returns `Duplicate` for a known (tx hash, log index); the DB has unique
+`(chain_id, tx_hash, log_index)` on `observed_transfers` and on `unmatched_payments` (`ON CONFLICT DO NOTHING`).
+Re-scanning any range — after a restart, a lost checkpoint or a reorg rollback — changes nothing. Every status change
+goes through `IInvoiceRepository.UpdateAsync` (invoice + outbox in one transaction, optimistic concurrency, NFR-2/3).
+
+**Confirmations (FR-7, D4).** Final when `head - block + 1 >= N`. Defaults: `Confirmations = 2` (local Anvil, fast
+demos); use 3+ on Base Sepolia. A confirmed transfer is final (D11): choose N above any reorg depth you expect.
+**On time** = block timestamp < `expires_at` (domain rule, D11).
+
+**Expiry worker.** `InvoiceExpiryProcessor` (looped by `InvoiceExpiryService` every `ExpiryInterval`) expires
+pending/underpaid invoices whose deadline is not after `ChainScanState.ScannedThrough` = max(timestamp of the last
+scanned block, the service time at which a pass read the head and then caught up to it). So nothing expires before the
+scanner has looked at the blocks up to the deadline (e.g. right after a restart); an on-time payment found later still
+goes `expired → confirming` (D11). Caveat: Anvil without `--block-time` mines no blocks when idle — then the
+"caught up" time is what moves `ScannedThrough` forward.
+
+**Resilience (NFR-4).** Both workers catch everything except shutdown, log it and retry with exponential backoff
+(`RetryBaseDelay` doubling to `RetryMaxDelay`, ±20 % jitter); the host never stops. All RPC failures surface as
+`ChainRpcException` with messages that never contain the RPC URL (it may hold a provider API key, NFR-5).
+
+**Observability (NFR-7).** Meter `AcceptCrypto.Chain`: gauges `acceptcrypto.scanner.lag_blocks`, `head_block`,
+`last_scanned_block`; counters `transfers`, `reorgs`, `failed_passes`. Health check `chain-scanner` (only when
+enabled): Degraded when no pass succeeded for `StaleAfter` (2 min), with lag/failures in the data. Structured logs via
+source-generated `LoggerMessage`.
+
+**Chain ID, one setting.** `Chain:ChainId` post-configures `Persistence:ChainId` (removed from appsettings).
+
+**Enabled flag.** `Chain:Enabled` (default false) registers the background services, validation and health check; the
+Preview runs without a chain. `appsettings.Development.json` holds the local Anvil RPC URL, the mock token address and
+`StartBlock: 0`; the compose stack (step 11) sets `Chain__Enabled=true`.
+
+**Known limitation.** An unmatched payment recorded from a block that is later reorged away stays in the unmatched
+list (it is informational; invoices are never affected). Roadmap: re-verify recent unmatched rows like unconfirmed
+transfers.

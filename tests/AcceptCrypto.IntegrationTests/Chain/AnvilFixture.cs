@@ -141,7 +141,7 @@ public sealed class AnvilFixture : IAsyncLifetime
 }
 
 [CollectionDefinition(Name)]
-public sealed class AnvilTestGroup : ICollectionFixture<AnvilFixture>
+public sealed class AnvilTestGroup : ICollectionFixture<AnvilFixture>, ICollectionFixture<Persistence.PostgresFixture>
 {
     public const string Name = "anvil";
 }
