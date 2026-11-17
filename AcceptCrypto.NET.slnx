@@ -3,12 +3,14 @@
     <Project Path="src/AcceptCrypto.DemoShop/AcceptCrypto.DemoShop.csproj" />
     <Project Path="src/AcceptCrypto.Domain/AcceptCrypto.Domain.csproj" />
     <Project Path="src/AcceptCrypto.Infrastructure/AcceptCrypto.Infrastructure.csproj" />
+    <Project Path="src/AcceptCrypto.LocalChain/AcceptCrypto.LocalChain.csproj" />
     <Project Path="src/AcceptCrypto.Payer/AcceptCrypto.Payer.csproj" />
     <Project Path="src/AcceptCrypto.Sdk/AcceptCrypto.Sdk.csproj" />
     <Project Path="src/AcceptCrypto.Service/AcceptCrypto.Service.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/AcceptCrypto.Domain.Tests/AcceptCrypto.Domain.Tests.csproj" />
+    <Project Path="tests/AcceptCrypto.Infrastructure.Tests/AcceptCrypto.Infrastructure.Tests.csproj" />
     <Project Path="tests/AcceptCrypto.IntegrationTests/AcceptCrypto.IntegrationTests.csproj" />
     <Project Path="tests/AcceptCrypto.Sdk.Tests/AcceptCrypto.Sdk.Tests.csproj" />
   </Folder>

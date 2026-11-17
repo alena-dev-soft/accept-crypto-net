@@ -6,4 +6,12 @@
     <RootNamespace>AcceptCrypto.Payer</RootNamespace>
   </PropertyGroup>
 
+  <ItemGroup>
+    <ProjectReference Include="..\AcceptCrypto.LocalChain\AcceptCrypto.LocalChain.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="AcceptCrypto.Infrastructure.Tests" />
+  </ItemGroup>
+
 </Project>
