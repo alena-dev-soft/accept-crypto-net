@@ -1,0 +1,27 @@
+<Project>
+  <!-- Shared build settings for every project in AcceptCrypto.NET. -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <EnableNETAnalyzers>true</EnableNETAnalyzers>
+    <AnalysisLevel>latest</AnalysisLevel>
+    <AnalysisMode>Recommended</AnalysisMode>
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <Deterministic>true</Deterministic>
+    <ContinuousIntegrationBuild Condition="'$(CI)' == 'true'">true</ContinuousIntegrationBuild>
+    <IsPackable>false</IsPackable>
+    <Authors>Olena Shapovalova</Authors>
+    <Product>AcceptCrypto.NET</Product>
+    <RepositoryUrl>https://github.com/alena-dev-soft/accept-crypto-net</RepositoryUrl>
+  </PropertyGroup>
+
+  <!-- Test projects: XML docs not required (file still generated so IDE0005 runs on build). -->
+  <PropertyGroup Condition="$(MSBuildProjectName.EndsWith('Tests'))">
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+    <IsTestProject>true</IsTestProject>
+  </PropertyGroup>
+</Project>

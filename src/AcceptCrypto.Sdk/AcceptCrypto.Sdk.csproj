@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <IsPackable>true</IsPackable>
+    <PackageId>AcceptCrypto.NET</PackageId>
+    <Description>ASP.NET Core SDK for the AcceptCrypto.NET payment service: typed API client and webhook signature verification for non-custodial USDC payments.</Description>
+    <PackageTags>usdc;crypto;payments;webhooks;aspnetcore;ethereum;erc20</PackageTags>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <Version>0.1.0-alpha</Version>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="AcceptCrypto.Sdk.Tests" />
+  </ItemGroup>
+
+</Project>

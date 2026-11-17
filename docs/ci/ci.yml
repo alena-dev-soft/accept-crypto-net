@@ -1,0 +1,67 @@
+# Copy this file to .github/workflows/ci.yml to enable CI (kept here because the agent token cannot push workflow files).
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DOTNET_NOLOGO: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
+
+jobs:
+  build-test:
+    name: Build & test
+    # ubuntu-latest ships a running Docker daemon, so Testcontainers-based
+    # integration tests (PostgreSQL, Anvil) can run here without extra setup.
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - name: Docker info (for Testcontainers)
+        run: docker version --format 'Docker {{.Server.Version}}'
+
+      - name: Restore
+        run: dotnet restore AcceptCrypto.NET.slnx
+
+      - name: Build
+        run: dotnet build AcceptCrypto.NET.slnx --configuration Release --no-restore
+
+      - name: Test
+        run: >
+          dotnet test AcceptCrypto.NET.slnx --configuration Release --no-build
+          --logger "trx;LogFilePrefix=results"
+          --results-directory ./TestResults
+          --collect "XPlat Code Coverage"
+
+      - name: Pack SDK
+        run: dotnet pack src/AcceptCrypto.Sdk/AcceptCrypto.Sdk.csproj --configuration Release --no-build --output ./artifacts
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: TestResults
+
+      - name: Upload NuGet package
+        uses: actions/upload-artifact@v4
+        with:
+          name: nuget-package
+          path: artifacts/*.nupkg

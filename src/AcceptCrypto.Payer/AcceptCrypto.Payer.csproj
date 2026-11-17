@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>pay</AssemblyName>
+    <RootNamespace>AcceptCrypto.Payer</RootNamespace>
+  </PropertyGroup>
+
+</Project>
