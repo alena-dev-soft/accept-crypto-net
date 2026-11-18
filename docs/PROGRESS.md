@@ -18,7 +18,8 @@ Spec: `AcceptCrypto.NET_SPEC.md` (project file, not in the repo). Decisions: [DE
 - [x] **12. README and architecture documentation: value line + badge, payment-cycle GIF, architecture + state diagrams (Mermaid), Docker-only quick start, S1–S7 walk-through, "how the hard parts are solved" with proving tests, SDK, decisions, roadmap, no-mainnet warning** (see step notes)
 - [x] **13. Base Sepolia profile + guide, packaging drafts: `appsettings.BaseSepolia.json`, `docker-compose.base-sepolia.yml`, `base-sepolia.env.example`, `pay xpub [new]`, [testnet.md](testnet.md) (incl. video script), [marketing/](marketing/) drafts (Upwork card, dev.to article, Project Catalog offer)** (see step notes, DECISIONS D21)
 - [x] **14. Definition of done checked on a clean clone (see step notes: table ✅/❌), fixes: microsecond clock (FR-2 replay byte-identical), Development settings = compose stack, payer `--then-reorg`, README/demo.md corrections**
-- [ ] Human: testnet run, video, review/publish the drafts (see "Open points → For the human"); PR
+- [x] **15. Pull request: final check (Release build 0 warnings, `dotnet test` 527/527 green), PROGRESS updated, PR `agent/project-7c5d012e` → `main` opened** (see step notes)
+- [ ] Human tasks — see [Open human tasks](#open-human-tasks) (Docker run, CI activation, GIF/video, testnet run, publishing texts, NuGet, PR review/merge)
 
 (Steps after 1 are a working outline; refine as the project plan evolves.)
 
@@ -635,6 +636,32 @@ path. Under Docker the README estimates 3–5 min for the first image build, the
 
 **Not changed (noted):** the sandbox's own PostgreSQL had to be stopped to free port 5432 for the compose attempt —
 a stranger with a local PostgreSQL hits the same; the README already says the ports must be free.
+
+### Step 15 — Pull request (done)
+
+- Working tree clean; `dotnet build AcceptCrypto.NET.slnx -c Release --no-incremental`: 0 warnings, 0 errors.
+- `dotnet test -c Release` (PostgreSQL 15 via `ACCEPTCRYPTO_TEST_POSTGRES`, Anvil binary from `~/.foundry/bin`):
+  **527/527 passed** — Domain 135, Infrastructure 123, SDK 94, DemoShop 9, Integration 166 (≈ 2 min).
+- Pull request opened from `agent/project-7c5d012e` into `main` with the reviewer summary (what was built, decisions,
+  how to run/check, Definition of done results, limitations). No code changes in this step.
+
+## Open human tasks
+
+Everything the agents could not do (no usable Docker, no `workflow` token scope, no wallet / publishing accounts).
+Details in "Open points" below and in [testnet.md](testnet.md) / [marketing/](marketing/).
+
+1. **Review and merge the PR** (`agent/project-7c5d012e` → `main`).
+2. **Activate CI:** copy `docs/ci/ci.yml` to `.github/workflows/ci.yml` on GitHub, check the first run is green
+   (build-test with Testcontainers + `compose-smoke`); the README badge then turns green.
+3. **Run the Docker stack once:** `docker compose up --build`, follow the README quick start,
+   `scripts/smoke-test.sh` (verified natively only so far).
+4. **GIF:** optionally re-record `docs/images/payment-cycle.gif` as a real screen recording (current: 6-frame slideshow).
+5. **Testnet run** on Base Sepolia per [testnet.md](testnet.md) (own xpub via `pay xpub new`, MetaMask, faucet ETH +
+   Circle test USDC); report differences from the guide.
+6. **Video** (1–2 min, script at the end of testnet.md); check that no secret is visible; optionally link it in the README.
+7. **Publishing texts:** fill the `[…]` placeholders in [marketing/](marketing/), take the screenshots, publish the
+   Upwork portfolio card, the dev.to article and the Project Catalog offer.
+8. **NuGet:** publish the `AcceptCrypto.NET` SDK package to nuget.org (README says "not yet on nuget.org").
 
 ## Open points
 
