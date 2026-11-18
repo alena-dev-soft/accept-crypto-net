@@ -3,6 +3,7 @@ using System.Net;
 using System.Text;
 using AcceptCrypto.Sdk.Webhooks;
 using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Time.Testing;
@@ -17,11 +18,12 @@ public sealed class WebhookEndpointTests : IAsyncDisposable
     private WebApplication? _app;
     private int _failuresLeft;
 
-    private async Task<HttpClient> StartAsync(Action<AcceptCryptoOptions>? configure = null)
+    private async Task<HttpClient> StartAsync(Action<AcceptCryptoOptions>? configure = null, Action<IServiceCollection>? services = null)
     {
         var builder = WebApplication.CreateSlimBuilder();
         builder.WebHost.UseTestServer();
         builder.Services.AddSingleton<TimeProvider>(_clock);
+        services?.Invoke(builder.Services);
         builder.Services.AddAcceptCrypto(o =>
         {
             o.WebhookSecret = TestData.Secret;
@@ -206,6 +208,60 @@ public sealed class WebhookEndpointTests : IAsyncDisposable
         {
             await _app.DisposeAsync();
         }
+    }
+
+    [Fact]
+    public async Task ObserversSeeRejectedAndDuplicateWebhooks()
+    {
+        var observer = new RecordingObserver();
+        var client = await StartAsync(services: s =>
+        {
+            s.AddSingleton<IAcceptCryptoWebhookObserver>(new ThrowingObserver());
+            s.AddSingleton<IAcceptCryptoWebhookObserver>(observer);
+        });
+
+        var forged = await client.SendAsync(Webhook(TestData.PaidEventJson, Now, "attacker_secret_0000000000000000000000000"));
+        var replayed = await client.SendAsync(Webhook(TestData.PaidEventJson, Now.AddMinutes(-6), TestData.Secret));
+        var first = await client.SendAsync(Webhook(TestData.PaidEventJson, Now, TestData.Secret));
+        var duplicate = await client.SendAsync(Webhook(TestData.PaidEventJson, Now, TestData.Secret));
+
+        Assert.Equal(HttpStatusCode.BadRequest, forged.StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, replayed.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, first.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, duplicate.StatusCode);
+        Assert.Equal([WebhookRejectionReason.SignatureMismatch, WebhookRejectionReason.TimestampOutsideTolerance], observer.Rejected);
+        Assert.Equal(TestData.EventId, Assert.Single(observer.Duplicates));
+        Assert.Single(_received);
+    }
+
+    private sealed class RecordingObserver : IAcceptCryptoWebhookObserver
+    {
+        public List<WebhookRejectionReason> Rejected { get; } = [];
+
+        public List<Guid> Duplicates { get; } = [];
+
+        public Task OnRejectedAsync(HttpContext context, WebhookRejectionReason reason, ReadOnlyMemory<byte> body)
+        {
+            Assert.False(body.IsEmpty);
+            Rejected.Add(reason);
+            return Task.CompletedTask;
+        }
+
+        public Task OnDuplicateAsync(HttpContext context, AcceptCryptoEvent webhookEvent, WebhookEventClaim claim)
+        {
+            Assert.Equal(WebhookEventClaim.AlreadyProcessed, claim);
+            Duplicates.Add(webhookEvent.Id);
+            return Task.CompletedTask;
+        }
+    }
+
+    private sealed class ThrowingObserver : IAcceptCryptoWebhookObserver
+    {
+        public Task OnRejectedAsync(HttpContext context, WebhookRejectionReason reason, ReadOnlyMemory<byte> body) =>
+            throw new InvalidOperationException("audit log down");
+
+        public Task OnDuplicateAsync(HttpContext context, AcceptCryptoEvent webhookEvent, WebhookEventClaim claim) =>
+            throw new InvalidOperationException("audit log down");
     }
 
     private sealed class RecordingHandler : IAcceptCryptoWebhookHandler

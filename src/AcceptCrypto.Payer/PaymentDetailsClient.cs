@@ -23,9 +23,11 @@ internal sealed record InvoiceReference(Uri ServiceBaseUrl, string Value, bool I
 
     /// <summary>
     /// Accepts a payment-page URL (<c>http://host/pay/{token}</c>: service URL taken from it), an invoice ID (GUID,
-    /// merchant API, needs the API key) or a public payment-page token.
+    /// merchant API, needs the API key) or a public payment-page token. With <paramref name="serviceOverride"/> (an
+    /// explicit <c>--service</c> / <c>ACCEPTCRYPTO_SERVICE_URL</c>), a URL only contributes its token: inside Docker the
+    /// page URL says <c>localhost:5052</c>, while the service is reachable as <c>service:8080</c>.
     /// </summary>
-    public static InvoiceReference Parse(string argument, Uri defaultServiceUrl)
+    public static InvoiceReference Parse(string argument, Uri defaultServiceUrl, Uri? serviceOverride = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(argument);
         if (Uri.TryCreate(argument, UriKind.Absolute, out var url) && (url.Scheme == Uri.UriSchemeHttp || url.Scheme == Uri.UriSchemeHttps))
@@ -34,6 +36,11 @@ internal sealed record InvoiceReference(Uri ServiceBaseUrl, string Value, bool I
             if (segments.Length < 2 || !string.Equals(segments[^2], "pay", StringComparison.OrdinalIgnoreCase))
             {
                 throw new FormatException($"Expected a payment page URL like http://host/pay/<token>, got '{argument}'.");
+            }
+
+            if (serviceOverride is not null)
+            {
+                return new InvoiceReference(WithTrailingSlash(serviceOverride), segments[^1], IsInvoiceId: false);
             }
 
             var prefix = string.Join('/', segments[..^2]);

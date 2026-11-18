@@ -102,6 +102,15 @@ public class PayerLogicTests
     }
 
     [Fact]
+    public void Explicit_service_url_wins_over_the_host_of_a_payment_page_url()
+    {
+        var reference = InvoiceReference.Parse("http://localhost:5052/pay/AbC-_123", Service, new Uri("http://service:8080"));
+
+        Assert.Equal(new Uri("http://service:8080/"), reference.ServiceBaseUrl);
+        Assert.Equal("api/public/invoices/AbC-_123", reference.Path);
+    }
+
+    [Fact]
     public void Token_uses_the_public_endpoint_and_guid_the_merchant_api()
     {
         var token = InvoiceReference.Parse("AbC-_123", Service);

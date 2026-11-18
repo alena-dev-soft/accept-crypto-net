@@ -9,6 +9,7 @@
     <Project Path="src/AcceptCrypto.Service/AcceptCrypto.Service.csproj" />
   </Folder>
   <Folder Name="/tests/">
+    <Project Path="tests/AcceptCrypto.DemoShop.Tests/AcceptCrypto.DemoShop.Tests.csproj" />
     <Project Path="tests/AcceptCrypto.Domain.Tests/AcceptCrypto.Domain.Tests.csproj" />
     <Project Path="tests/AcceptCrypto.Infrastructure.Tests/AcceptCrypto.Infrastructure.Tests.csproj" />
     <Project Path="tests/AcceptCrypto.IntegrationTests/AcceptCrypto.IntegrationTests.csproj" />

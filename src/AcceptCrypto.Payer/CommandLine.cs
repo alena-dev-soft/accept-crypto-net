@@ -105,7 +105,8 @@ internal sealed class CommandLine
         Options (environment variable in brackets):
           --rpc URL           JSON-RPC URL            [ACCEPTCRYPTO_RPC_URL]       default http://localhost:8545
           --token ADDRESS     USDC contract           [ACCEPTCRYPTO_TOKEN_ADDRESS] default mock USDC on Anvil
-          --service URL       AcceptCrypto service    [ACCEPTCRYPTO_SERVICE_URL]   default http://localhost:5052
+          --service URL       AcceptCrypto service    [ACCEPTCRYPTO_SERVICE_URL]   default http://localhost:5052;
+                              when set, it also wins over the host of a payment page URL (Docker)
           --api-key KEY       merchant API key        [ACCEPTCRYPTO_API_KEY]       only for invoice IDs
           --private-key KEY   payer key               [PAYER_PRIVATE_KEY]          default Anvil account #1 (local only)
         """;

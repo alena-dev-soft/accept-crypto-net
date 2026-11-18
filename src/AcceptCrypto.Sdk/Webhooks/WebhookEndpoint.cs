@@ -93,13 +93,20 @@ public static partial class AcceptCryptoWebhookEndpointExtensions
         catch (AcceptCryptoWebhookException ex)
         {
             LogRejected(logger, ex.Reason, context.Request.Headers[AcceptCryptoWebhookVerifier.EventIdHeader].ToString());
+            await NotifyObserversAsync(context, logger, o => o.OnRejectedAsync(context, ex.Reason, body ?? [])).ConfigureAwait(false);
             var status = ex.Reason == WebhookRejectionReason.PayloadTooLarge ? StatusCodes.Status413PayloadTooLarge : StatusCodes.Status400BadRequest;
             await WriteProblemAsync(context, status, "Webhook rejected", AcceptCryptoWebhookVerifier.Describe(ex.Reason)).ConfigureAwait(false);
             return;
         }
 
         var deduplicator = services.GetRequiredService<IWebhookEventDeduplicator>();
-        switch (await deduplicator.TryBeginAsync(webhookEvent, aborted).ConfigureAwait(false))
+        var claim = await deduplicator.TryBeginAsync(webhookEvent, aborted).ConfigureAwait(false);
+        if (claim != WebhookEventClaim.New)
+        {
+            await NotifyObserversAsync(context, logger, o => o.OnDuplicateAsync(context, webhookEvent, claim)).ConfigureAwait(false);
+        }
+
+        switch (claim)
         {
             case WebhookEventClaim.AlreadyProcessed:
                 LogDuplicate(logger, webhookEvent.Id, webhookEvent.Type);
@@ -161,6 +168,23 @@ public static partial class AcceptCryptoWebhookEndpointExtensions
         return buffer.ToArray();
     }
 
+    private static async Task NotifyObserversAsync(HttpContext context, ILogger logger, Func<IAcceptCryptoWebhookObserver, Task> notify)
+    {
+        foreach (var observer in context.RequestServices.GetServices<IAcceptCryptoWebhookObserver>())
+        {
+            try
+            {
+                await notify(observer).ConfigureAwait(false);
+            }
+#pragma warning disable CA1031 // Monitoring must never change the webhook response.
+            catch (Exception ex)
+#pragma warning restore CA1031
+            {
+                LogObserverFailed(logger, ex, observer.GetType().Name);
+            }
+        }
+    }
+
     private static Task WriteProblemAsync(HttpContext context, int status, string title, string detail) =>
         Results.Problem(title: title, detail: detail, statusCode: status).ExecuteAsync(context);
 
@@ -175,4 +199,7 @@ public static partial class AcceptCryptoWebhookEndpointExtensions
 
     [LoggerMessage(EventId = 4, Level = LogLevel.Information, Message = "AcceptCrypto webhook {EventId} ({EventType}) handled")]
     private static partial void LogHandled(ILogger logger, Guid eventId, string eventType);
+
+    [LoggerMessage(EventId = 5, Level = LogLevel.Warning, Message = "AcceptCrypto webhook observer {Observer} failed")]
+    private static partial void LogObserverFailed(ILogger logger, Exception exception, string observer);
 }

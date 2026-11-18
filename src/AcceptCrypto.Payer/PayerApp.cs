@@ -139,8 +139,9 @@ internal sealed class PayerApp(TextWriter output, Func<string, string?> environm
                 throw new FormatException("Usage: pay <invoice> [--amount X] [--split N]");
             }
 
-            var serviceUrl = new Uri(cmd.Option("--service") ?? environment("ACCEPTCRYPTO_SERVICE_URL") ?? "http://localhost:5052");
-            var reference = InvoiceReference.Parse(cmd.Arguments[0], serviceUrl);
+            var explicitService = cmd.Option("--service") ?? environment("ACCEPTCRYPTO_SERVICE_URL");
+            var serviceUrl = new Uri(explicitService ?? "http://localhost:5052");
+            var reference = InvoiceReference.Parse(cmd.Arguments[0], serviceUrl, explicitService is null ? null : serviceUrl);
             using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
             var details = await new PaymentDetailsClient(http)
                 .GetAsync(reference, cmd.Option("--api-key") ?? environment("ACCEPTCRYPTO_API_KEY"), ct).ConfigureAwait(false);

@@ -4,4 +4,8 @@
     <ProjectReference Include="..\AcceptCrypto.Sdk\AcceptCrypto.Sdk.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="AcceptCrypto.DemoShop.Tests" />
+  </ItemGroup>
+
 </Project>
