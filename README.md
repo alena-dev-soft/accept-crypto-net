@@ -3,7 +3,7 @@
 [![CI](https://github.com/alena-dev-soft/accept-crypto-net/actions/workflows/ci.yml/badge.svg)](https://github.com/alena-dev-soft/accept-crypto-net/actions/workflows/ci.yml)
 AcceptCrypto.NET — a non-custodial USDC payment SDK for ASP.NET Core applications, with invoice management, on-chain confirmation tracking and signed merchant webhooks.
 
-> Status: early development — solution skeleton. See [docs/PROGRESS.md](docs/PROGRESS.md) and [docs/DECISIONS.md](docs/DECISIONS.md).
+> Status: MVP in progress — service, SDK, demo shop and the one-command stack work; README packaging pending. See [docs/PROGRESS.md](docs/PROGRESS.md) and [docs/DECISIONS.md](docs/DECISIONS.md).
 
 ## Quick start: the whole cycle in one command
 

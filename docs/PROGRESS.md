@@ -13,8 +13,8 @@ Spec: `AcceptCrypto.NET_SPEC.md` (project file, not in the repo). Decisions: [DE
 - [x] **7. Webhooks: outbox dispatcher (SKIP LOCKED + lease, per-invoice order), HMAC-SHA256 signing, rotation, backoff + jitter, failed state, resend, metrics** (see step notes, DECISIONS D16, [webhooks.md](webhooks.md))
 - [x] **8. Payment page: instructions + QR (EIP-681) + live status (polling), public status JSON** (see step notes, DECISIONS D17, API.md §Payment page)
 - [x] **9. SDK (`AcceptCrypto.NET` package): DI registration, typed client, Problem Details → typed exceptions, webhook verification + rotation + tolerance, typed events, dedup hook, `MapAcceptCryptoWebhook`, README, tests** (see step notes, DECISIONS D18, [SDK README](../src/AcceptCrypto.Sdk/README.md))
-- [ ] 10. Demo shop (scripted payer and mock USDC are done in the local-chain step)
-- [ ] 11. One-command stack (docker compose), integration tests (Testcontainers, forced reorg), S1–S7
+- [x] **10. Demo shop on the SDK + one-command stack (docker compose), demo scripts** (see step notes, DECISIONS D19, [demo.md](demo.md))
+- [ ] 11. Integration tests for S1–S7 end to end (most exist since steps 3–9: forced reorg, restart, unmatched, retries); compose smoke test runs in CI once CI is activated
 - [ ] 12. README packaging (GIF, architecture diagram, "hard parts" section), testnet guide, PR
 
 (Steps after 1 are a working outline; refine as the project plan evolves.)
@@ -30,6 +30,8 @@ dotnet run --project src/AcceptCrypto.Service      # Development: /health, /scal
 dotnet pack src/AcceptCrypto.Sdk -c Release -o artifacts   # AcceptCrypto.NET.<ver>.nupkg
 scripts/local-chain.sh                              # Anvil + mock USDC + funded payer (needs Foundry)
 dotnet run --project src/AcceptCrypto.Payer -- --help   # scripted payer
+docker compose up --build                           # whole stack: shop :5080, service :5052, anvil :8545, postgres :5432
+scripts/smoke-test.sh                               # S1 → S2 → webhook → forged webhook, against the running stack
 ```
 
 Tree Work Preview runs `npm install && npm run dev`: `package.json` → `scripts/dev.sh`, which installs the
@@ -431,7 +433,60 @@ Notes for next steps: the demo shop (step 10) uses `AddAcceptCrypto()` with sect
 itself (`AcceptCryptoWebhookVerifier.ComputeSignatureHeader` signs test payloads). Publishing to nuget.org is not
 done (needs an API key from the owner; CI already uploads the `.nupkg` as an artifact).
 
+### Step 10 — Demo shop and one-command stack (done)
+
+Decisions: **D19**; walkthrough of every scenario: [demo.md](demo.md).
+
+- `src/AcceptCrypto.DemoShop` (SDK only): catalog of 3 products → `POST /checkout` creates the order, calls
+  `CreateInvoiceAsync` (idempotency key `order-<id>`, optional 2-minute lifetime for S4) and redirects to the payment
+  page; `/orders`, `/orders/{id}` (order + its webhooks + the service's view via `GetInvoiceAsync`), `/webhooks`
+  (webhook log incl. rejected/duplicates), `/api/orders` (JSON for scripts), `/health`.
+  Webhooks: `MapAcceptCryptoWebhook("/webhooks/acceptcrypto", …)`; `Shop/ShopStore.cs` = JSON-file store (atomic
+  writes, `Shop:DataPath`) + persistent `IWebhookEventDeduplicator` + `IAcceptCryptoWebhookObserver`; stale (older)
+  events don't move an order back. FR-26 demo: `POST /demo/attacks/{forged|tampered|replay|stale}` (`Shop/WebhookAttacks.cs`).
+- SDK: new optional `IAcceptCryptoWebhookObserver` (rejected / duplicate webhooks), test added; README section.
+- Payer: an explicit `--service` / `ACCEPTCRYPTO_SERVICE_URL` wins over the host of a payment page URL (Docker); test added.
+- `Dockerfile` (targets `service`, `demoshop`, `payer`), `.dockerignore`, `docker-compose.yml` (postgres, anvil with
+  2 s blocks, one-off `deploy`, service, demoshop, `payer` in profile `tools`; test-only secrets inline with a
+  warning; webhook URL → `http://demoshop:8080/...`, `demoshop` on the SSRF allowlist, 5 s→30 s retries for 30 min,
+  5 confirmations). Scripts: `scripts/pay.sh` (payer container, or `dotnet run` with `PAY_USE_DOTNET=1`),
+  `scripts/webhook-attack.sh <kind>`, `scripts/smoke-test.sh`. `docs/ci/ci.yml` got a `compose-smoke` job.
+- Tests: `tests/AcceptCrypto.DemoShop.Tests` (8, `WebApplicationFactory` + fake `IAcceptCryptoClient`): checkout →
+  invoice + redirect + idempotency key, short lifetime, service down → `invoice_failed`/502, signed webhook → paid and
+  duplicate not applied, older event ignored, forged/tampered/stale rejected + replay = duplicate + logged, orders and
+  processed IDs survive a restart, pages render. Whole solution: 135 + 111 + 94 + 8 + 152 = 500 green (local
+  PostgreSQL 15 + Anvil).
+
+**Verification of the stack (this container has no usable Docker: the daemon starts but cannot create containers or
+even unpack image layers — "mount namespace: operation not permitted").** What was done instead:
+- `docker compose config -q` (Compose v2.32) — the file is valid; the foundry `v1.9.0` tag and its entrypoint
+  (`/bin/sh -c`, hence the explicit `entrypoint: ["anvil"]`) were checked in the ghcr.io registry.
+- The Dockerfile's restore/publish commands were run on a copy containing only what the Dockerfile copies
+  (`global.json`, `Directory.*.props`, `.editorconfig`, `src/`) — all three publish cleanly.
+- The stack was run **natively with the exact environment of docker-compose.yml** (generated from the file; only host
+  names mapped to localhost): Anvil `--block-time 2`, payer `setup` (deploy), the published service (Production
+  environment + compose env), the published shop. Results:
+  - **S1→S2**: shop checkout → 302 to `http://localhost:5052/pay/<token>` → payer (with the compose payer env, i.e.
+    `ACCEPTCRYPTO_SERVICE_URL` override) → payment page `confirming` → `paid`; shop receives `invoice.confirming` and
+    `invoice.paid`, order `paid`. `scripts/smoke-test.sh` passes in ~14 s.
+  - **S3** underpay 1 → `underpaid` (remaining 4) → top-up 4 → `paid`. **S4** 2-minute invoice → `expired` → paid →
+    `paid_late` (shop order `paid_late`).
+  - **S5** shop stopped, order paid → service retries (5 s, 10 s, 20 s …) → shop restarted → `invoice.confirming`
+    delivered on attempt 4, order `paid`.
+  - **FR-8/FR-9** service stopped, transfer sent, service restarted → invoice `paid`, amount counted once.
+  - **FR-10** pay + `pay reorg 4` within the confirmation window → `payment.reverted` + `invoice.pending`, never `paid`.
+  - **FR-26** forged/tampered → 400 SignatureMismatch, stale → 400 TimestampOutsideTolerance, replay → duplicate
+    (200, not applied); all in the webhook log.
+  - **S7** transfer to the address of a paid invoice → `/v1/unmatched-payments` lists it (`invoice_closed`).
+- Screenshots: `docs/images/demo-shop-*.png`.
+- **Open:** a real `docker compose up --build` run still has to happen on a machine with Docker — the `compose-smoke`
+  CI job does exactly that once CI is activated (see the CI open point), or run `docker compose up -d --build &&
+  scripts/smoke-test.sh` locally.
+
 ## Open points
+
+- **Docker stack not yet run under real Docker** (no usable Docker in the agent container, see step 10): run
+  `docker compose up -d --build && scripts/smoke-test.sh` once, or activate CI (job `compose-smoke`).
 
 - **CI activation (manual, owner):** the platform's GitHub token lacks the `workflow` scope, so the workflow cannot be
   pushed to `.github/workflows/`. The owner copies `docs/ci/ci.yml` to `.github/workflows/ci.yml` on GitHub.
