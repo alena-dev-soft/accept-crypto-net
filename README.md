@@ -31,7 +31,12 @@ Requires the [.NET 10 SDK](https://dotnet.microsoft.com/download).
 ```bash
 dotnet build AcceptCrypto.NET.slnx
 dotnet test AcceptCrypto.NET.slnx
-dotnet run --project src/AcceptCrypto.Service   # Development settings: /health, /scalar (API reference), /v1/*
+dotnet run --project src/AcceptCrypto.Service   # Development settings: /health, /metrics, /scalar (API reference), /v1/*
 ```
+
+Tests run on a real PostgreSQL and a local Anvil chain (Testcontainers; Docker needed, or see
+[docs/TESTS.md](docs/TESTS.md#how-to-run) for existing servers). Every scenario of the spec (S1–S7, restart, reorg,
+forged webhooks) has an end-to-end test against the whole system — the table in [docs/TESTS.md](docs/TESTS.md) maps
+each one to its test. Logs, health checks and Prometheus metrics: [docs/observability.md](docs/observability.md).
 
 Merchant REST API: see [docs/API.md](docs/API.md) (OpenAPI at `/openapi/v1.json`, UI at `/scalar`).

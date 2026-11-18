@@ -8,7 +8,7 @@ The service's REST API for the merchant's backend (the SDK wraps it). Machine-re
   Responses use the canonical form (trailing zeros trimmed).
 - **Timestamps** are ISO 8601 with offset, UTC.
 - **Authentication** (FR-17): header `X-Api-Key: <Merchant:ApiKey>` on every `/v1` call. Missing or wrong key → `401`
-  with `WWW-Authenticate: ApiKey header="X-Api-Key"`. Public: `/health`, `/health/ready`, `/openapi/v1.json`, `/scalar`.
+  with `WWW-Authenticate: ApiKey header="X-Api-Key"`. Public: `/health`, `/health/ready`, `/metrics`, `/openapi/v1.json`, `/scalar`.
 
 ## Endpoints
 
@@ -217,7 +217,9 @@ xpub); the Preview (`scripts/dev.sh`) runs with them.
 
 ## Health (NFR-7)
 
-- `GET /health` — liveness: `Healthy` / `Degraded` (scanner check when the scanner is enabled). No dependencies, so it
-  stays green without a database.
+- `GET /health` — liveness: `Healthy` / `Degraded` (scanner check when the scanner is enabled, `webhooks` queue check
+  from in-memory stats). No dependencies, so it stays green without a database.
 - `GET /health/ready` — readiness: also `database` (PostgreSQL reachable) and `rpc` (node reachable and on
   `Chain:ChainId`, only when `Chain:Enabled`). JSON with per-check status; `503` when unhealthy. No exception texts.
+- `GET /metrics` — Prometheus metrics (chain lag, webhook queue, delivery outcomes, HTTP/runtime). See
+  [observability.md](observability.md).

@@ -14,7 +14,7 @@ Spec: `AcceptCrypto.NET_SPEC.md` (project file, not in the repo). Decisions: [DE
 - [x] **8. Payment page: instructions + QR (EIP-681) + live status (polling), public status JSON** (see step notes, DECISIONS D17, API.md §Payment page)
 - [x] **9. SDK (`AcceptCrypto.NET` package): DI registration, typed client, Problem Details → typed exceptions, webhook verification + rotation + tolerance, typed events, dedup hook, `MapAcceptCryptoWebhook`, README, tests** (see step notes, DECISIONS D18, [SDK README](../src/AcceptCrypto.Sdk/README.md))
 - [x] **10. Demo shop on the SDK + one-command stack (docker compose), demo scripts** (see step notes, DECISIONS D19, [demo.md](demo.md))
-- [ ] 11. Integration tests for S1–S7 end to end (most exist since steps 3–9: forced reorg, restart, unmatched, retries); compose smoke test runs in CI once CI is activated
+- [x] **11. End-to-end tests S1–S7 (+ FR-8/9, FR-10, FR-26), observability (`/metrics`, webhook health check), CI test report** (see step notes, DECISIONS D20, [TESTS.md](TESTS.md), [observability.md](observability.md))
 - [ ] 12. README packaging (GIF, architecture diagram, "hard parts" section), testnet guide, PR
 
 (Steps after 1 are a working outline; refine as the project plan evolves.)
@@ -37,7 +37,9 @@ scripts/smoke-test.sh                               # S1 → S2 → webhook → 
 Tree Work Preview runs `npm install && npm run dev`: `package.json` → `scripts/dev.sh`, which installs the
 .NET 10 SDK into `~/.dotnet` if missing and runs the service on `0.0.0.0:$PORT`.
 
-CI: workflow file is stored at `docs/ci/ci.yml` (see open points) — restore, build (Release), test (trx + coverage), pack SDK, on every push/PR.
+CI: workflow file is stored at `docs/ci/ci.yml` (see open points) — restore, build (Release), test (trx + coverage,
+hang timeout), test report (check run + job summary), coverage summary, pack SDK, compose smoke test, on every push/PR.
+Scenario → test map: [TESTS.md](TESTS.md). Only the E2E scenarios: `dotnet test tests/AcceptCrypto.IntegrationTests --filter "FullyQualifiedName~EndToEnd"`.
 Runs on `ubuntu-latest` (Docker available for Testcontainers).
 
 ## Step notes
@@ -483,11 +485,47 @@ even unpack image layers — "mount namespace: operation not permitted").** What
   CI job does exactly that once CI is activated (see the CI open point), or run `docker compose up -d --build &&
   scripts/smoke-test.sh` locally.
 
+### Step 11 — end-to-end tests, observability, CI (done)
+
+Decisions: **D20**. Scenario/requirement → test table: [TESTS.md](TESTS.md). Metrics/health/logs: [observability.md](observability.md).
+
+- `tests/AcceptCrypto.IntegrationTests/EndToEnd/`:
+  - `EndToEndHarness` — the real `Program` host (API, payment page, scanner, expiry worker, webhook dispatcher all
+    running) on a fresh PostgreSQL DB + reset Anvil (clock set to wall time), SDK typed client, stop/start/restart of
+    the service on the same DB; `Eventually` polling with deadlines and "last seen" messages.
+  - `MerchantApp` — a merchant ASP.NET Core app on the SDK (`AddAcceptCrypto` + `MapAcceptCryptoWebhook`) on Kestrel
+    (fixed port, can be down), records handled/rejected/duplicate webhooks and raw requests; shiftable clock for replay.
+  - `ScenarioTests` (10): S1, S2, S3 (under/over/split + top-up), S4 (expired + paid_late), S5 (merchant down → delivered
+    when back), S6 (filters, cursor, transfers + webhook history), S7 (payments to paid/cancelled invoices → unmatched),
+    FR-8/FR-9 (stop during a payment + payment while down → found once; second restart adds nothing), FR-10 (forced
+    reorg → `payment.reverted` + `invoice.pending`, never paid), FR-26 (forged, tampered, unsigned → 400; immediate
+    replay → duplicate, not re-handled; late replay → 400).
+  - `ObservabilityTests` (2, own non-parallel collection): `/metrics` shows lag, queue, retry/delivered attempts,
+    HTTP meters; `/health/ready` shows database, rpc, chain-scanner, webhooks.
+- Observability (`src/AcceptCrypto.Service/Observability`): OpenTelemetry metrics + Prometheus exporter on `/metrics`
+  (service meters + ASP.NET Core/Kestrel/HttpClient/runtime), `Observability:MetricsEnabled|MetricsPath`;
+  `Health/WebhookQueueHealthCheck` (`webhooks`, Degraded on failed events or a stale queue). Logs were already
+  structured JSON (step 4); documented.
+- Test hosts outside the E2E harness set `Observability:MetricsEnabled=false` (OpenTelemetry's per-host preallocation
+  exhausted the 1.5 GB agent container with ~150 hosts; see D20).
+- CI template `docs/ci/ci.yml`: image pre-pull, `--blame-hang-timeout 5m`, `dorny/test-reporter@v2` (trx → check run +
+  job summary, `checks: write`), ReportGenerator coverage summary, artifacts (results + coverage). Linted with actionlint.
+- README: links to TESTS.md and observability.md; API.md: `/metrics`, webhooks health check.
+
+Verified here (no Docker daemon in the agent container → `ACCEPTCRYPTO_TEST_POSTGRES` against local PostgreSQL 15 and
+the `anvil` binary): whole solution green — 135 domain + 111 infrastructure + 94 SDK + 8 demo shop + 164 integration
+= 512 tests; the integration suite was run 3 more times in a row, all green (one flaky metrics assertion found on the
+way and fixed by isolating that collection). Release build clean, SDK packs. Production run: JSON logs, `/metrics`,
+`/health/ready` checked by hand; Preview (`npm run dev`) still starts, `/health` Healthy.
+
 ## Open points
 
 - **Docker stack not yet run under real Docker** (no usable Docker in the agent container, see step 10): run
   `docker compose up -d --build && scripts/smoke-test.sh` once, or activate CI (job `compose-smoke`).
 
+- **CI not yet observed green on GitHub** (step 11): everything passes locally against PostgreSQL + Anvil binary, but the
+  Testcontainers path (Docker on `ubuntu-latest`) and the compose smoke job only run once the workflow is activated.
+  After copying `docs/ci/ci.yml`, check the first run (expected ~6–8 min for build-test).
 - **CI activation (manual, owner):** the platform's GitHub token lacks the `workflow` scope, so the workflow cannot be
   pushed to `.github/workflows/`. The owner copies `docs/ci/ci.yml` to `.github/workflows/ci.yml` on GitHub.
   Agents must not commit files under `.github/workflows/` (the push is rejected). The README badge points to `ci.yml`.
