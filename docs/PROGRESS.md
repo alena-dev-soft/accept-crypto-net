@@ -17,6 +17,7 @@ Spec: `AcceptCrypto.NET_SPEC.md` (project file, not in the repo). Decisions: [DE
 - [x] **11. End-to-end tests S1–S7 (+ FR-8/9, FR-10, FR-26), observability (`/metrics`, webhook health check), CI test report** (see step notes, DECISIONS D20, [TESTS.md](TESTS.md), [observability.md](observability.md))
 - [x] **12. README and architecture documentation: value line + badge, payment-cycle GIF, architecture + state diagrams (Mermaid), Docker-only quick start, S1–S7 walk-through, "how the hard parts are solved" with proving tests, SDK, decisions, roadmap, no-mainnet warning** (see step notes)
 - [x] **13. Base Sepolia profile + guide, packaging drafts: `appsettings.BaseSepolia.json`, `docker-compose.base-sepolia.yml`, `base-sepolia.env.example`, `pay xpub [new]`, [testnet.md](testnet.md) (incl. video script), [marketing/](marketing/) drafts (Upwork card, dev.to article, Project Catalog offer)** (see step notes, DECISIONS D21)
+- [x] **14. Definition of done checked on a clean clone (see step notes: table ✅/❌), fixes: microsecond clock (FR-2 replay byte-identical), Development settings = compose stack, payer `--then-reorg`, README/demo.md corrections**
 - [ ] Human: testnet run, video, review/publish the drafts (see "Open points → For the human"); PR
 
 (Steps after 1 are a working outline; refine as the project plan evolves.)
@@ -586,6 +587,55 @@ not the 2 s blocks assumed in D14) — hence N = 60 ≈ 12 s.
 
 Tests (all green here): Domain 135, DemoShop 9, Sdk 94, Infrastructure 120, Integration 164 (local PostgreSQL 15 via `ACCEPTCRYPTO_TEST_POSTGRES` + `anvil` binary; no Docker daemon).
 
+### Step 14 — Definition of done on a clean clone (done)
+
+**Setup.** `git clone --branch agent/project-7c5d012e` into an empty directory, then only README / docs/demo.md.
+**Docker could not run in the agent sandbox:** `dockerd` starts only with `--iptables=false`, and pulling the first
+image fails with `Error creating mount namespace before pivot: operation not permitted` (no mount namespaces in the
+container). So the stack was started with the documented **no-Docker path** ([demo.md → Without Docker](demo.md#without-docker)):
+PostgreSQL 15 on localhost, `anvil --chain-id 31337 --block-time 2`, `pay setup`, `dotnet run` service + shop — the same
+settings as `docker-compose.yml` (after this step `appsettings.Development.json` mirrors them; on the first pass they
+were passed as env vars). The payer ran as `PAY_USE_DOTNET=1 scripts/pay.sh …`; "stop the service/shop" = kill the
+`dotnet run` process. **The compose path itself still needs one run under real Docker** (CI job `compose-smoke`, or
+the human: `docker compose up --build && scripts/smoke-test.sh`).
+
+**Timing.** Clone → stack healthy: 208 s; clone → first shop order **paid** (webhook applied in the shop): **269 s
+(≈ 4.5 min)** — including ~100 s lost on the failed Docker attempt and a 31 s `dotnet build`. Target ≤ 10 min ✅ for this
+path. Under Docker the README estimates 3–5 min for the first image build, then < 1 min to `paid`; not measured here.
+
+| DoD item | Result | How it was checked / comment |
+| --- | --- | --- |
+| S1 invoice via API, page opens | ✅ | README `curl` → 201 with `payment_page_url`, page 200; same `Idempotency-Key` → 200 + `Idempotent-Replayed: true`, same ID. **Found:** replay body differed from the 201 in timestamp precision (`.9175839` vs `.917583`) → fixed (below), re-checked: byte-identical. Also via the shop: *Buy* → redirected to the payment page |
+| S2 pay → `paid`, shop webhook, page shows it | ✅ | Shop order (T-shirt, 25 USDC) paid by the scripted payer; ~19 s later page *Payment received*, shop order `paid`, shop log `invoice.confirming` + `invoice.paid` handled (screenshots in the step log). `scripts/smoke-test.sh` also: All good |
+| S3 underpaid / overpaid / split | ✅ | `--amount 1` of 10 → `underpaid` (remaining 9); top-up `--amount 9` → `paid`; `--amount 100` of 10 → `overpaid`; `--split 2` → `paid` |
+| S4 expired / paid_late | ✅ | 60 s invoices → `expired` (expiry sweep within a few seconds of the deadline); paying one afterwards → `paid_late`. Re-checked after a forced reorg (chain clock re-sync): still `paid_late` |
+| FR-8/FR-9 service stopped during a payment | ✅ | (a) service down, paid by address, restarted → `paid`; (b) paid, service killed while `confirming`, 20 s down, restarted → `paid`. Both: 1 transfer, events exactly `invoice.confirming`, `invoice.paid` (not counted twice) |
+| FR-10 forced reorg | ✅ (after fix) | First pass with the README one-liner (`pay.sh <url> && pay.sh reorg 4`) worked; on the re-run it came **too late** (invoice reached `paid` — the 4 dropped blocks no longer contained the tx): starting the payer twice with `dotnet run` costs ~6 s each vs ≈ 10 s for 5 confirmations. **Fix:** `pay <url> --then-reorg` (below). Re-checked twice: `invoice.confirming` → `payment.reverted` → `invoice.pending`, never `paid`; shop received `payment.reverted` |
+| S5 shop down → webhook delivered later | ✅ | Shop process killed, order paid; service log: attempts 2, 3, 4 … failed (connection refused), retried 5 s → 30 s; shop restarted → `invoice.confirming` and `invoice.paid` handled in order, order `paid` |
+| FR-26 forged / replayed webhook rejected | ✅ | `scripts/webhook-attack.sh`: forged, tampered → 400 "No valid v1 signature."; stale → 400 "…outside the tolerance window."; replay → 200 + shop log "is a duplicate; skipped" (not applied); raw `curl` with `v1=00` → 400. **Found:** README promised the bodies `SignatureMismatch` / `TimestampOutsideTolerance` (those are the reason names in the shop's webhook log, not the HTTP response) → README/demo.md wording fixed |
+| S7 unmatched transfer listed | ✅ | 1 USDC to a paid invoice's address → `GET /v1/unmatched-payments`: `reason: invoice_closed` + `invoice_id`. A transfer to a random address is **not** listed — by design (D14: `eth_getLogs` filters on deposit addresses, `unknown_address` unreachable); README only promises the closed-invoice case |
+| (S6) list + history | ✅ | `?status=paid&limit=2` → 2 items + `next_cursor`; details show transfers and webhook events; no API key → 401; `/openapi/v1.json` 200; `/metrics` exposes `acceptcrypto_*` |
+| Tests green in CI | ❌ (not observable) / ✅ locally | **No GitHub Actions run exists**: the workflow is still only at `docs/ci/ci.yml` (agent token cannot push `.github/workflows/`), the GitHub API reports 0 runs. Locally on the clean clone, the CI steps: Release build 0 warnings/errors, `dotnet test` **527/527 passed** (Domain 135, Infrastructure 123, SDK 94, Shop 9, Integration 166; PostgreSQL via `ACCEPTCRYPTO_TEST_POSTGRES`, Anvil binary), `dotnet pack` OK. Owner action: copy the workflow, check the first run |
+| README enough to run everything | ✅ (after fixes) | Every scenario ran from README/demo.md commands only. Fixed along the way: FR-26 response wording; FR-10 timing (`--then-reorg`); no-Docker pointer in Quick start; demo.md "Without Docker" now uses `anvil --block-time 2` + `pay setup` (with `local-chain.sh` blocks only come with transactions, so confirmations never accrue) and states that the Development settings match the compose stack |
+
+**Fixes in this step.**
+
+- `StorageTimeProvider` (Infrastructure/Persistence): the system clock truncated to microseconds (PostgreSQL
+  `timestamptz` precision); default `TimeProvider` of persistence, webhooks and scanner registrations. The 201 of a
+  create and its idempotent replay (FR-2) — and any in-memory response vs a later GET — are now identical. Tests:
+  `StorageTimeProviderTests`.
+- `appsettings.Development.json` (service): `Chain:Confirmations` 5, webhook retries 5 s → 30 s, 60 attempts, 30 min —
+  as in `docker-compose.yml`, so the walk-through behaves the same without Docker (tests use the `Testing` environment,
+  unaffected).
+- Payer `--then-reorg` (FR-10 demo): pays, polls the public status until `confirming` (≤ 30 s), then reorgs from the
+  payment's first block (depth = head − block + 1) with the same chain-clock re-sync as `reorg`; refuses (exit 1) if
+  the invoice is already past `confirming`. Tests in `ScriptedPayerTests`. README, demo.md, pay.sh and compose comments
+  use it; `reorg N` stays for the by-hand variant.
+- README/demo.md: FR-26 responses, no-Docker pointer, demo.md "Without Docker" rewritten.
+
+**Not changed (noted):** the sandbox's own PostgreSQL had to be stopped to free port 5432 for the compose attempt —
+a stranger with a local PostgreSQL hits the same; the README already says the ports must be free.
+
 ## Open points
 
 - **For the human (packaging, step 12):** (1) run `docker compose up --build` once on a machine with Docker and
@@ -605,7 +655,9 @@ Tests (all green here): Domain 135, DemoShop 9, Sdk 94, Infrastructure 120, Inte
      Catalog).
   4. Optionally add the video link to the README.
 
-- **Docker stack not yet run under real Docker** (no usable Docker in the agent container, see step 10): run
+- **Definition of done (step 14):** all scenario items ✅ on a clean clone via the no-Docker path; open: one run of the
+  compose path under real Docker and the first green CI run on GitHub (both need the human / CI, see below).
+- **Docker stack not yet run under real Docker** (no usable Docker in the agent container, see steps 10 and 14): run
   `docker compose up -d --build && scripts/smoke-test.sh` once, or activate CI (job `compose-smoke`).
 
 - **CI not yet observed green on GitHub** (step 11): everything passes locally against PostgreSQL + Anvil binary, but the
