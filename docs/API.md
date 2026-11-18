@@ -154,13 +154,14 @@ does not start with missing or invalid values, and validation messages never con
 | --- | --- |
 | `Merchant:ApiKey` | Secret, ≥ 32 chars, no whitespace (`openssl rand -hex 32`) |
 | `Merchant:WebhookUrl` | https URL; http, private IPs and localhost only for hosts on `Webhooks:AllowedHosts` |
-| `Merchant:WebhookSecret` | Secret, ≥ 32 chars; signs webhooks (step 7) |
-| `Merchant:PreviousWebhookSecret` | Optional, only during rotation; must differ from the current one |
+| `Merchant:WebhookSecret` | Secret, ≥ 32 chars; signs webhooks (see [webhooks.md](webhooks.md)) |
+| `Merchant:PreviousWebhookSecret` | Optional, only during rotation; must differ from the current one; adds a second `v1=` signature |
 | `Merchant:Xpub` | Extended public key at `m/44'/60'/0'/0` (xpub/tpub); xprv is refused |
 | `Invoices:MinAmount` / `MaxAmount` | Decimal strings (default `0.01` / `1000000`) |
 | `Invoices:DefaultLifetime` / `MinLifetime` / `MaxLifetime` | Default 30 min / 1 min / 7 days |
 | `Webhooks:AllowedHosts` | SSRF allowlist (e.g. `demo-shop`), exact host match |
-| `Webhooks:InitialRetryDelay` / `MaxRetryDelay` / `MaxAttempts` / `RetryWindow` / `RequestTimeout` | Retry schedule (default 30 s doubling to 1 h, 30 attempts, 24 h window, 10 s timeout) |
+| `Webhooks:InitialRetryDelay` / `MaxRetryDelay` / `MaxAttempts` / `RetryWindow` / `RequestTimeout` | Retry schedule (default 30 s doubling to 1 h, 30 attempts, 24 h window, 10 s timeout) — see [webhooks.md](webhooks.md) |
+| `Webhooks:DispatcherEnabled` / `PollInterval` / `BatchSize` / `MaxParallelDeliveries` / `ClaimLease` / `DispatcherErrorDelay` | Dispatcher (default on, 1 s, 20, 4, 2 min, 2 s) |
 | `Api:PublicBaseUrl` | Base of payment page links; default: the request's scheme/host |
 | `Api:DefaultPageSize` / `MaxPageSize` | 50 / 200 |
 | `Chain:ChainId`, `Chain:NetworkName`, `Chain:TokenSymbol`, `Chain:TokenAddress`, `Chain:Confirmations` | Shown in payment details; scanner settings see DECISIONS D14 |

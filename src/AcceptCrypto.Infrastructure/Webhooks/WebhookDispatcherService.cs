@@ -7,7 +7,7 @@ using Microsoft.Extensions.Options;
 namespace AcceptCrypto.Infrastructure.Webhooks;
 
 /// <summary>
-/// Runs <see cref="WebhookDispatcher"/> passes forever: right away again after a full batch, otherwise every
+/// Runs <see cref="WebhookDispatcher"/> passes forever: right away again while passes claim events, otherwise every
 /// <see cref="WebhookOptions.PollInterval"/>. A database outage is logged and retried with backoff (capped at one
 /// minute); it never stops the host and loses nothing — events stay in the outbox (NFR-4).
 /// </summary>
@@ -32,8 +32,9 @@ public sealed partial class WebhookDispatcherService(
             {
                 var claimed = await dispatcher.RunOnceAsync(stoppingToken).ConfigureAwait(false);
                 failures = 0;
-                if (claimed >= options.CurrentValue.BatchSize)
+                if (claimed > 0)
                 {
+                    // More may be due right away (a full batch, or the next event of an invoice just delivered).
                     continue;
                 }
 

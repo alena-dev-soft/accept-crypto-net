@@ -420,3 +420,46 @@ exception texts (they may contain host names).
 the request's trace ID is in the scope); Development uses the simple formatter. Endpoint events use source-generated
 `LoggerMessage` with IDs/amounts only, never metadata or keys. A startup line summarises the configuration (webhook
 origin, number of secrets, chain) without values.
+
+## D16 — Webhook delivery: claiming, signing, retries, rotation, payload (step 7)
+
+Reference: [webhooks.md](webhooks.md). Code: `src/AcceptCrypto.Infrastructure/Webhooks`.
+
+**Claiming (NFR-3).** One SQL statement: `FOR UPDATE SKIP LOCKED` picks due pending rows nobody else holds and moves
+their `next_attempt_at` forward by `Webhooks:ClaimLease` (a lease) before returning them. The HTTP request then runs
+*outside* any transaction (no long-held row locks, no open transaction while a merchant is slow); the result is
+written with the `xmin` row version. A crashed dispatcher only delays its events by the lease → at-least-once,
+deduplicated by event ID on the merchant side (FR-16). Several service instances can run dispatchers safely
+(test: four parallel dispatchers deliver 24 events exactly once).
+
+**Per-invoice order.** Only the oldest *pending* event of an invoice is claimable, so events of one invoice arrive in
+causal order (`confirming` before `paid`), never in parallel. Trade-off: an event in retry holds back newer events of
+the same invoice — acceptable because all events go to the same URL (if one fails, the next would too); a **failed**
+event stops blocking. Events of different invoices are independent. Rejected: Stripe-style "no order guarantee" (more
+work for the integrator, who is the target user).
+
+**Signature (FR-13).** `v1=hex(HMAC-SHA256(secret, "{timestamp}.{body}"))` in `AcceptCrypto-Signature`, timestamp
+(Unix seconds of the *attempt*) in `AcceptCrypto-Timestamp`, event ID in `AcceptCrypto-Event-Id`, plus
+`AcceptCrypto-Event-Type`. Headers without the `X-` prefix (RFC 6648). Each attempt is re-signed, so the receiver's
+5-minute tolerance applies to the delivery, not the event age. Reference vectors are in webhooks.md and the tests.
+
+**Rotation (FR-0).** The service signs with the current (new) secret; while `Merchant:PreviousWebhookSecret` is set it
+adds a second `v1=` entry with the old secret (the header is a comma-separated list). This makes rotation order-free:
+the service can switch before or after the merchant's app. Verification with several secrets is the SDK's job (FR-26).
+
+**Retries (FR-14).** `InitialRetryDelay·2^(n−1)` capped at `MaxRetryDelay`, ±20 % jitter (shared `Backoff` helper);
+failed when `MaxAttempts` is reached or the next attempt would fall outside `RetryWindow`. The window is counted from
+`retry_cycle_started_at` (new column, migration `WebhookRetryCycle`): creation, or the last manual resend — otherwise a
+resend of a day-old event would fail after one attempt. Any non-2xx, timeout, connection error or SSRF refusal is a
+failed attempt; no special case for 410 (single configured merchant; it can fix its endpoint and resend).
+
+**Payload.** `{"id","type","created_at","api_version","data":{"invoice":{snapshot},"previous_status"|"transfer"}}`.
+The snapshot replaced the flat fields of step 3 (no consumers yet). `api_version` = `2026-11-17`; additive changes keep
+the version. No payment-page token, idempotency key or derivation index in webhooks.
+
+**Metrics (NFR-7).** Meter `AcceptCrypto.Webhooks`: queue length (pending), due, failed, oldest pending age (gauges,
+refreshed by the dispatcher), attempts by outcome and duration.
+
+**Hosting.** `AddAcceptCryptoWebhooks` (merchant options + SSRF guard + named `HttpClient` with the guarded handler +
+dispatcher); `Webhooks:DispatcherEnabled=false` turns the background service off (API tests). Without a database the
+dispatcher logs and backs off (max 1 min); `/health` stays green, as the Preview needs.

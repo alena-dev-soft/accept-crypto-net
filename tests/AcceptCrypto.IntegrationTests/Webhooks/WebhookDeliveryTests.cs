@@ -262,22 +262,50 @@ public sealed class WebhookDeliveryTests(PostgresFixture postgres)
     }
 
     [Fact]
-    public async Task Events_of_one_invoice_are_sent_in_causal_order()
+    public async Task Events_of_one_invoice_are_delivered_in_causal_order_and_a_retrying_event_holds_back_the_next()
     {
         await using var store = await postgres.CreateStoreAsync();
         await using var receiver = await WebhookReceiver.StartNewAsync();
-        await using var harness = new DispatcherHarness(store, receiver.Url, new Dictionary<string, string?> { ["Webhooks:MaxParallelDeliveries"] = "1" });
+        receiver.Status = HttpStatusCode.ServiceUnavailable;
+        await using var harness = new DispatcherHarness(store, receiver.Url);
         var invoice = await store.CreateInvoiceAsync("10");
         var transfer = store.Transfer(invoice.DepositAddress, "10");
         await store.RecordAsync(invoice.Id, transfer);
         await store.ConfirmAsync(invoice.Id, transfer.Id);
 
-        await harness.RunOnceAsync();
+        // Only the head of the invoice's queue is claimed; while it is retried, invoice.paid waits behind it.
+        Assert.Equal(1, await harness.RunOnceAsync());
+        store.Clock.Advance(TimeSpan.FromSeconds(5));
+        Assert.Equal(0, await harness.RunOnceAsync());
 
-        Assert.Equal(["invoice.confirming", "invoice.paid"], receiver.Received.Select(r => r.EventType));
+        receiver.Status = HttpStatusCode.OK;
+        store.Clock.Advance(TimeSpan.FromMinutes(1));
+        while (await harness.RunOnceAsync() > 0)
+        {
+        }
+
+        Assert.Equal(["invoice.confirming", "invoice.confirming", "invoice.paid"], receiver.Received.Select(r => r.EventType));
         using var paid = JsonDocument.Parse(receiver.Received.Last().Body);
         Assert.Equal("paid", paid.RootElement.GetProperty("data").GetProperty("invoice").GetProperty("status").GetString());
         Assert.Equal("confirming", paid.RootElement.GetProperty("data").GetProperty("previous_status").GetString());
+    }
+
+    [Fact]
+    public async Task A_failed_event_does_not_block_later_events_of_the_invoice()
+    {
+        await using var store = await postgres.CreateStoreAsync();
+        await using var receiver = await WebhookReceiver.StartNewAsync();
+        receiver.Status = HttpStatusCode.BadRequest;
+        await using var harness = new DispatcherHarness(store, receiver.Url, new Dictionary<string, string?> { ["Webhooks:MaxAttempts"] = "1" });
+        var invoice = await store.CreateInvoiceAsync("10");
+        var transfer = store.Transfer(invoice.DepositAddress, "10");
+        await store.RecordAsync(invoice.Id, transfer);
+        await harness.RunOnceAsync(); // invoice.confirming fails for good
+
+        receiver.Status = HttpStatusCode.OK;
+        await store.ConfirmAsync(invoice.Id, transfer.Id);
+        Assert.Equal(1, await harness.RunOnceAsync());
+        Assert.Equal("invoice.paid", receiver.Received.Last().EventType);
     }
 
     [Fact]

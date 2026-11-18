@@ -10,7 +10,7 @@ Spec: `AcceptCrypto.NET_SPEC.md` (project file, not in the repo). Decisions: [DE
 - [x] **4. Merchant API: create/get/list/cancel invoices, unmatched payments, resend event; API key auth, Problem Details, OpenAPI, config validation, SSRF guard, readiness checks** (see step notes, DECISIONS D15, API.md)
 - [x] **Local chain: Anvil, mock USDC, xpub derivation (former 5), scripted payer, chain test helpers** (see step notes, DECISIONS D13)
 - [x] **6. Chain scanner: eth_getLogs, checkpoint, chunking, confirmations, reorg handling, unmatched, expiry** (see step notes, DECISIONS D14)
-- [ ] 7. Webhooks: signing (HMAC-SHA256 over `{timestamp}.{body}`), dispatcher with backoff, secret rotation (SSRF guard + options ready from step 4)
+- [x] **7. Webhooks: outbox dispatcher (SKIP LOCKED + lease, per-invoice order), HMAC-SHA256 signing, rotation, backoff + jitter, failed state, resend, metrics** (see step notes, DECISIONS D16, [webhooks.md](webhooks.md))
 - [ ] 8. Payment page: instructions + QR + live status
 - [ ] 9. SDK: DI registration, typed client, webhook verification, typed events, README, tests
 - [ ] 10. Demo shop (scripted payer and mock USDC are done in the local-chain step)
@@ -309,6 +309,40 @@ Notes for next steps:
   `Merchant__Xpub`, `Webhooks__AllowedHosts__0=demo-shop`, `Api__PublicBaseUrl=http://localhost:<port>`; readiness
   probe `/health/ready`.
 
+### Step 7 — webhook delivery: signature, retries, rotation (done)
+
+Contract for receivers (and the SDK, step 9): **[webhooks.md](webhooks.md)** — headers, signature algorithm with
+reference vectors, payload schema, delivery semantics, rotation procedure, configuration, metrics. Decisions: **D16**.
+
+- `Infrastructure/Webhooks`: `WebhookSignature` (compute / header / verify), `WebhookRetryPolicy` (backoff + jitter,
+  attempt limit, window), `WebhookDispatcher` (claim → SSRF check → signed POST → record attempt),
+  `WebhookDispatcherService` (BackgroundService, never crashes on DB/merchant errors), `WebhookMetrics`
+  (meter `AcceptCrypto.Webhooks`), `AddAcceptCryptoWebhooks` (replaces `AddAcceptCryptoMerchant` in `Program.cs`).
+- Persistence: `IOutboxRepository.ClaimDueAsync` (single SQL: `FOR UPDATE SKIP LOCKED` + lease, oldest pending event
+  per invoice only) and `GetQueueStatsAsync`; `OutboxEvent.RetryCycleStartedAt` (migration `WebhookRetryCycle`),
+  reset by `Resend`; `RecordFailure` no longer downgrades an event delivered meanwhile.
+- Payload now `{"id","type","created_at","api_version","data":{"invoice":{snapshot},…}}` (`OutboxEventFactory`).
+- Headers: `AcceptCrypto-Event-Id`, `AcceptCrypto-Event-Type`, `AcceptCrypto-Timestamp`, `AcceptCrypto-Signature: v1=…[,v1=…]`.
+- Rotation: service signs with `Merchant:WebhookSecret`; with `Merchant:PreviousWebhookSecret` set it adds a second
+  `v1=` entry. The SDK must accept any configured secret against any `v1=` entry, with a 5-min timestamp tolerance.
+- Config: new `Webhooks:DispatcherEnabled/PollInterval/BatchSize/MaxParallelDeliveries/ClaimLease/DispatcherErrorDelay`;
+  the short demo retry profile is in `appsettings.Development.json` (5 s → 1 min, 10 min window).
+- Tests: unit (`Infrastructure.Tests/Webhooks`): signature reference vectors (computed with Python `hmac`, checked
+  with `openssl`), rotation header, tampering; retry schedule (default ≈ 24 h, jitter bounds, limit, window, resend
+  = new window), option validation. Integration (`IntegrationTests/Webhooks`, real PostgreSQL + Kestrel receiver on
+  127.0.0.1): signed delivery of the stored bytes, rotation signatures, **S5** (receiver down → backoff 30 s/60 s →
+  receiver back → delivered once), non-2xx → failed after the limit → resend delivers with the **same event ID and
+  body**, window exhaustion, timeout, SSRF refusal via DNS answer, 4 parallel dispatchers → each event exactly once,
+  lease expiry, per-invoice order + head-of-line, failed event does not block, queue metrics, hosted service survives
+  the outage; payload schema (exact keys, no token/idempotency key). `ApiHarness` disables the dispatcher.
+- Verified: whole solution 135 + 110 + 1 + 137 tests green against local PostgreSQL 15
+  (`ACCEPTCRYPTO_TEST_POSTGRES`); the service starts in Development without a database, `/health` 200, the
+  dispatcher logs and backs off.
+
+Next steps rely on: SDK (step 9) implements verification per webhooks.md §2 (tests can reuse the vectors) and typed
+events per §3; demo shop (step 10) receives at `/webhooks/acceptcrypto`; compose (step 11) sets
+`Webhooks__AllowedHosts__0=demo-shop` and the demo retry profile.
+
 ## Open points
 
 - **CI activation (manual, owner):** the platform's GitHub token lacks the `workflow` scope, so the workflow cannot be
@@ -320,6 +354,5 @@ Notes for next steps:
 - Payment page UI technology (D8) is chosen in step 8.
 - Step 3 follow-ups: step 4 maps `KeyReusedWithDifferentRequest` to a Problem Details error and computes the request
   fingerprint (e.g. SHA-256 of the canonical create request) (step 6 done: `Chain:ChainId` feeds
-  `Persistence:ChainId`, `InvoiceClosed` transfers are recorded as unmatched); step 7 claims due outbox rows
-  (consider `FOR UPDATE SKIP LOCKED`) and should keep per-invoice event order; step 11 compose sets
+  `Persistence:ChainId`, `InvoiceClosed` transfers are recorded as unmatched); step 7 done (claiming with `FOR UPDATE SKIP LOCKED`, per-invoice order, D16); step 11 compose sets
   `ConnectionStrings__AcceptCrypto` and `Persistence__MigrateOnStartup=true`. DB/RPC readiness checks exist since step 4 (`/health/ready`).

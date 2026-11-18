@@ -44,6 +44,7 @@ public interface IOutboxRepository
     /// dispatchers: <c>FOR UPDATE SKIP LOCKED</c> picks rows nobody else is claiming, and the claim moves their
     /// <c>next_attempt_at</c> to <paramref name="leaseUntil"/>, so no other dispatcher takes them while the HTTP
     /// request runs. If the claimer dies, the lease runs out and the event is picked up again (at-least-once).
+    /// Only the oldest pending event of each invoice is claimed, which keeps per-invoice delivery order.
     /// </summary>
     Task<IReadOnlyList<OutboxEvent>> ClaimDueAsync(DateTimeOffset now, DateTimeOffset leaseUntil, int limit, CancellationToken cancellationToken = default);
 
@@ -181,12 +182,16 @@ public sealed class OutboxRepository(IDbContextFactory<AcceptCryptoDbContext> co
         var pending = nameof(OutboxEventStatus.Pending);
 
         // One statement = one transaction: lock due rows (skipping rows another dispatcher holds), push them behind
-        // the lease and return them. The CTE keeps the causal order for the caller.
+        // the lease and return them. Per-invoice FIFO: only the oldest pending event of an invoice is claimable, so
+        // events of one invoice are delivered one after another in causal order (a failed event no longer blocks).
         var claimed = await db.OutboxEvents.FromSql($"""
             WITH due AS (
-                SELECT id FROM outbox_events
-                WHERE status = {pending} AND next_attempt_at <= {now}
-                ORDER BY id
+                SELECT id FROM outbox_events e
+                WHERE e.status = {pending} AND e.next_attempt_at <= {now}
+                  AND NOT EXISTS (
+                      SELECT 1 FROM outbox_events earlier
+                      WHERE earlier.invoice_id = e.invoice_id AND earlier.status = {pending} AND earlier.id < e.id)
+                ORDER BY e.id
                 LIMIT {limit}
                 FOR UPDATE SKIP LOCKED)
             UPDATE outbox_events o SET next_attempt_at = {leaseUntil}
