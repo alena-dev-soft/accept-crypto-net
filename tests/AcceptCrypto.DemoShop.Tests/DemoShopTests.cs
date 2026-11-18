@@ -18,7 +18,7 @@ public sealed class DemoShopTests : IDisposable
     private readonly FakeAcceptCryptoClient _client = new();
     private readonly List<WebApplicationFactory<Program>> _factories = [];
 
-    private (WebApplicationFactory<Program> Factory, HttpClient Http) Start()
+    private (WebApplicationFactory<Program> Factory, HttpClient Http) Start(string? payerCommand = null)
     {
         WebApplicationFactory<Program>? factory = null;
         factory = new WebApplicationFactory<Program>().WithWebHostBuilder(b =>
@@ -29,6 +29,11 @@ public sealed class DemoShopTests : IDisposable
             b.UseSetting("AcceptCrypto:WebhookSecret", Secret);
             b.UseSetting("Shop:DataPath", Path.Combine(_dataDir, "shop.json"));
             b.UseSetting("Shop:SelfUrl", "http://localhost");
+            if (payerCommand is not null)
+            {
+                b.UseSetting("Shop:PayerCommand", payerCommand);
+            }
+
             b.ConfigureServices(s =>
             {
                 s.AddSingleton<IAcceptCryptoClient>(_client);
@@ -169,6 +174,18 @@ public sealed class DemoShopTests : IDisposable
         var orderPage = await http.GetStringAsync(new Uri("/orders/" + orderId, UriKind.Relative));
         Assert.Contains("Open the payment page", orderPage, StringComparison.Ordinal);
         Assert.Contains("Payment service view", orderPage, StringComparison.Ordinal);
+        Assert.Contains("scripted payer", orderPage, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Testnet_profile_hides_the_scripted_payer_hint()
+    {
+        var (_, http) = Start(payerCommand: "");
+        var orderId = await CheckoutAsync(http);
+
+        var orderPage = await http.GetStringAsync(new Uri("/orders/" + orderId, UriKind.Relative));
+        Assert.Contains("Open the payment page", orderPage, StringComparison.Ordinal);
+        Assert.DoesNotContain("scripted payer", orderPage, StringComparison.Ordinal);
     }
 
     public void Dispose()

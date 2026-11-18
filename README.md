@@ -56,6 +56,10 @@ The local stack waits for **5 confirmations** (≈ 10 s) and retries webhooks ev
 default ≈ 24 h). Reset everything: `docker compose down -v`. Check the whole cycle automatically (what CI runs):
 `scripts/smoke-test.sh`.
 
+**Public testnet (optional):** the same service and shop against **Base Sepolia** with Circle's test USDC, paid from
+MetaMask — profile `appsettings.BaseSepolia.json`, `docker-compose.base-sepolia.yml`, step-by-step guide (RPC, own
+xpub, faucets, video script) in [docs/testnet.md](docs/testnet.md).
+
 ## Walk-through: every scenario (S1–S7)
 
 The scenarios are the spec's; each one is also an automated end-to-end test ([docs/TESTS.md](docs/TESTS.md)).

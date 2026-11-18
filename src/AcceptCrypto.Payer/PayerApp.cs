@@ -30,6 +30,8 @@ internal sealed class PayerApp(TextWriter output, Func<string, string?> environm
                 return await ReorgAsync(cmd).ConfigureAwait(false);
             case "warp":
                 return await WarpAsync(cmd).ConfigureAwait(false);
+            case "xpub":
+                return await XpubAsync(cmd).ConfigureAwait(false);
             default:
                 return await PayAsync(cmd, ct).ConfigureAwait(false);
         }
@@ -241,6 +243,46 @@ internal sealed class PayerApp(TextWriter output, Func<string, string?> environm
         int.TryParse(text, NumberStyles.None, CultureInfo.InvariantCulture, out var value) && value > 0
             ? value
             : throw new FormatException($"{name} must be a positive integer, got '{text}'.");
+
+    /// <summary><c>pay xpub [new]</c>: the merchant xpub for a TESTNET deployment (docs/testnet.md). Offline.</summary>
+    private async Task<int> XpubAsync(CommandLine cmd)
+    {
+        string mnemonic;
+        if (cmd.Arguments is ["new"])
+        {
+            mnemonic = MerchantXpub.NewMnemonic();
+            await output.WriteLineAsync($"""
+                NEW TEST MNEMONIC (shown once; store it offline, e.g. in a password manager, never in git):
+
+                  {mnemonic}
+
+                TESTNET ONLY. Never send mainnet funds to addresses of this mnemonic.
+
+                """).ConfigureAwait(false);
+        }
+        else if (cmd.Arguments.Count == 0)
+        {
+            mnemonic = environment("MERCHANT_MNEMONIC")
+                ?? throw new FormatException("Set MERCHANT_MNEMONIC (e.g. read -rs MERCHANT_MNEMONIC; export MERCHANT_MNEMONIC) or run 'pay xpub new'.");
+        }
+        else
+        {
+            throw new FormatException("Usage: pay xpub [new]");
+        }
+
+        var (xpub, addresses) = MerchantXpub.Derive(mnemonic);
+        await output.WriteLineAsync($"Merchant xpub ({MerchantXpub.AccountPath}) — put it into Merchant__Xpub:").ConfigureAwait(false);
+        await output.WriteLineAsync().ConfigureAwait(false);
+        await output.WriteLineAsync($"  {xpub}").ConfigureAwait(false);
+        await output.WriteLineAsync().ConfigureAwait(false);
+        await output.WriteLineAsync("First deposit addresses (invoice index i = MetaMask \"Account i+1\" of this mnemonic):").ConfigureAwait(false);
+        for (var i = 0; i < addresses.Count; i++)
+        {
+            await output.WriteLineAsync($"  #{i}  {addresses[i]}").ConfigureAwait(false);
+        }
+
+        return 0;
+    }
 
     private static string ValidAddress(string address, string name) =>
         AddressUtil.Current.IsValidEthereumAddressHexFormat(address)

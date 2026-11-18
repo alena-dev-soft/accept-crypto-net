@@ -130,6 +130,6 @@ internal sealed class ShopOptions
     /// <summary>Base URL the attack demo posts to (the shop itself); default: the shop's own listening address.</summary>
     public Uri? SelfUrl { get; set; }
 
-    /// <summary>Command shown on order pages to pay with the scripted payer.</summary>
+    /// <summary>Command shown on order pages to pay with the scripted payer; empty = hide the hint (testnet, docs/testnet.md).</summary>
     public string PayerCommand { get; set; } = "dotnet run --project src/AcceptCrypto.Payer --";
 }

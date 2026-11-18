@@ -10,10 +10,10 @@ internal sealed class CommandLine
 
     private static readonly HashSet<string> Commands = new(StringComparer.Ordinal)
     {
-        "setup", "balance", "mine", "reorg", "warp", "help",
+        "setup", "balance", "mine", "reorg", "warp", "xpub", "help",
     };
 
-    /// <summary>Command: <c>pay</c> (default), <c>setup</c>, <c>balance</c>, <c>mine</c>, <c>reorg</c>, <c>warp</c>, <c>help</c>.</summary>
+    /// <summary>Command: <c>pay</c> (default), <c>setup</c>, <c>balance</c>, <c>mine</c>, <c>reorg</c>, <c>warp</c>, <c>xpub</c>, <c>help</c>.</summary>
     public string Command { get; private init; } = "pay";
 
     /// <summary>Positional arguments after the command (for <c>pay</c>: the invoice reference).</summary>
@@ -97,6 +97,8 @@ internal sealed class CommandLine
           pay mine [blocks]                         mine blocks (default 1), e.g. to add confirmations
           pay reorg <depth>                         forced reorg: drop the transactions of the last <depth> blocks
           pay warp <seconds>                        move chain time forward and mine a block (late payments, S4)
+          pay xpub [new]                            merchant xpub (m/44'/60'/0'/0) for a TESTNET wallet: from the
+                                                    mnemonic in MERCHANT_MNEMONIC, or 'new' = generate a fresh one
 
         <invoice>: payment page URL (http://host/pay/<token>), public token, or invoice ID (GUID, needs --api-key).
           --amount X    USDC amount instead of the invoice amount (less = underpay, more = overpay)

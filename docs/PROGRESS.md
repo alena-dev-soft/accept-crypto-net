@@ -16,7 +16,8 @@ Spec: `AcceptCrypto.NET_SPEC.md` (project file, not in the repo). Decisions: [DE
 - [x] **10. Demo shop on the SDK + one-command stack (docker compose), demo scripts** (see step notes, DECISIONS D19, [demo.md](demo.md))
 - [x] **11. End-to-end tests S1–S7 (+ FR-8/9, FR-10, FR-26), observability (`/metrics`, webhook health check), CI test report** (see step notes, DECISIONS D20, [TESTS.md](TESTS.md), [observability.md](observability.md))
 - [x] **12. README and architecture documentation: value line + badge, payment-cycle GIF, architecture + state diagrams (Mermaid), Docker-only quick start, S1–S7 walk-through, "how the hard parts are solved" with proving tests, SDK, decisions, roadmap, no-mainnet warning** (see step notes)
-- [ ] Next (open): testnet guide (Base Sepolia + MetaMask), video, Upwork card / dev.to article (human), PR
+- [x] **13. Base Sepolia profile + guide, packaging drafts: `appsettings.BaseSepolia.json`, `docker-compose.base-sepolia.yml`, `base-sepolia.env.example`, `pay xpub [new]`, [testnet.md](testnet.md) (incl. video script), [marketing/](marketing/) drafts (Upwork card, dev.to article, Project Catalog offer)** (see step notes, DECISIONS D21)
+- [ ] Human: testnet run, video, review/publish the drafts (see "Open points → For the human"); PR
 
 (Steps after 1 are a working outline; refine as the project plan evolves.)
 
@@ -549,15 +550,60 @@ way and fixed by isolating that collection). Release build clean, SDK packs. Pro
   late for 5 confirmations at 2 s blocks. In Docker the payer container starts in ~2–3 s (assumed, not measured here);
   without Docker use `scripts/local-chain.sh` (no `--block-time`, blocks only on transactions) as docs/demo.md says.
 
+### Step 13 — Base Sepolia guide and packaging drafts (done)
+
+What was added (decisions in DECISIONS.md **D21**):
+
+- **Profile** `src/AcceptCrypto.Service/appsettings.BaseSepolia.json` (`ASPNETCORE_ENVIRONMENT=BaseSepolia`): chain
+  84532, Circle test USDC `0x036CbD53842c5426634e7929541eC2318f3dCF7e` (source: Circle's
+  [USDC contract addresses](https://developers.circle.com/stablecoins/usdc-contract-addresses), Testnet → Base
+  Sepolia; checked on-chain: `decimals()` 6, `symbol()` USDC), N = 60, `MaxBlockRange` 200, `ReorgRollbackDepth` 300,
+  poll 4 s, `MaxAmount` 100. **No RPC URL and no secrets** in it: `Chain__RpcUrl`, `Merchant__*` come from env.
+- **`docker-compose.base-sepolia.yml`** (project `acceptcrypto-base-sepolia`: postgres + service + demo shop, no
+  Anvil) + **`base-sepolia.env.example`**; the real `base-sepolia.env` is git-ignored by `*.env`. Required variables
+  use `${VAR:?…}`, so a missing secret fails fast. `docker compose … config -q` passes.
+- **`pay xpub [new]`** (scripted payer, offline): xpub at `m/44'/60'/0'/0` + first deposit addresses from
+  `MERCHANT_MNEMONIC` (env, never echoed) or a freshly generated 12-word mnemonic; refuses the public test mnemonics.
+  Tests: `Infrastructure.Tests/LocalChain/MerchantXpubTests` (cross-checked with `XpubDepositAddressDeriver`).
+- **Demo shop:** `Shop:PayerCommand` empty → the local "scripted payer" hint is hidden (testnet video). Test
+  `DemoShopTests.Testnet_profile_hides_the_scripted_payer_hint`.
+- **docs/testnet.md:** RPC endpoint, xpub, faucets (Base docs faucet list, Circle faucet), start (Docker and
+  `dotnet run --no-launch-profile`), paying from MetaMask, what to watch out for, the 1–2 min video script.
+- **docs/marketing/:** `README.md` (index + facts used), `upwork-portfolio-card.md`, `devto-article.md` (structure +
+  full draft from the actual code), `project-catalog-offer.md` (packages with `[PRICE]`/`[DAYS]` placeholders).
+  No facts about the author, no invented numbers.
+
+Verified here (agent container, no Docker daemon): the service started with `ASPNETCORE_ENVIRONMENT=BaseSepolia`
+against the **public Base Sepolia RPC** and a local PostgreSQL 15: profile loaded (log: chain 84532, 60
+confirmations, scanner enabled), an invoice created via the API got deposit address #0 = the address printed by
+`pay xpub`, `/health/ready` Healthy with `lag_blocks` 0–25, restart resumed from the checkpoint. Screenshot:
+`docs/images/base-sepolia-payment-page.png`. **Not verified:** an actual MetaMask payment on Base Sepolia (needs a
+funded wallet — human task).
+
+Facts measured while writing (Nov 18, 2026): the public RPC `https://sepolia.base.org` rejects `eth_getLogs` over
+more than 200 blocks ("eth_getLogs is limited to a 200 range"); 1,000 Base Sepolia blocks took 200 s (≈ 5 blocks/s,
+not the 2 s blocks assumed in D14) — hence N = 60 ≈ 12 s.
+
+Tests (all green here): Domain 135, DemoShop 9, Sdk 94, Infrastructure 120, Integration 164 (local PostgreSQL 15 via `ACCEPTCRYPTO_TEST_POSTGRES` + `anvil` binary; no Docker daemon).
+
 ## Open points
 
 - **For the human (packaging, step 12):** (1) run `docker compose up --build` once on a machine with Docker and
   follow the README quick start — the stack has been verified natively only (see step 12); if the FR-10 one-liner is
   too slow there, raise `Chain__Confirmations` in `docker-compose.yml`. (2) Optionally re-record
   `docs/images/payment-cycle.gif` as a real screen recording (current one is a 6-frame slideshow of a local run).
-  (3) The 1–2 min testnet video (MetaMask on Base Sepolia), the Upwork portfolio card, the dev.to article and the
-  Project Catalog offer (spec "Packaging for Upwork") are not done — they need the owner's accounts.
-  (4) Publish the SDK to nuget.org (README says "not yet on nuget.org").
+  (3) Publish the SDK to nuget.org (README says "not yet on nuget.org").
+
+- **For the human (step 13 — testnet and packaging):**
+  1. Testnet run per [testnet.md](testnet.md): RPC endpoint (public or provider key), `pay xpub new` → own test
+     xpub, MetaMask test account with faucet ETH + Circle test USDC, `docker compose -f docker-compose.base-sepolia.yml
+     --env-file base-sepolia.env up --build`, pay the sticker pack (5 USDC) from MetaMask. Report back anything that
+     differs from the guide (e.g. MetaMask EIP-681 QR behaviour, faucet limits).
+  2. Record the 1–2 min video (script at the end of testnet.md); check no secret is visible.
+  3. Review and finish the drafts in [marketing/](marketing/): fill every `[…]` placeholder (role, prices, delivery
+     times, series, links), check the claims, take the listed screenshots, publish (Upwork card, dev.to, Project
+     Catalog).
+  4. Optionally add the video link to the README.
 
 - **Docker stack not yet run under real Docker** (no usable Docker in the agent container, see step 10): run
   `docker compose up -d --build && scripts/smoke-test.sh` once, or activate CI (job `compose-smoke`).
@@ -570,7 +616,7 @@ way and fixed by isolating that collection). Release build clean, SDK packs. Pro
   Agents must not commit files under `.github/workflows/` (the push is rejected). The README badge points to `ci.yml`.
 
 - CI badge added to README (repo: github.com/alena-dev-soft/accept-crypto-net).
-- Default N confirmations (D4): 2 (local Anvil), recommend 3+ on Base Sepolia — see D14. Open: unmatched rows from reorged blocks are not removed (D14 known limitation).
+- Default N confirmations (D4): 2 (local Anvil; compose 5); Base Sepolia profile 60 ≈ 12 s at the measured ≈ 5 blocks/s — see D21. Open: unmatched rows from reorged blocks are not removed (D14 known limitation).
 - Payment page UI technology: chosen in step 8 (D17: server-rendered HTML + vanilla JS, polling).
 - Step 3 follow-ups: step 4 maps `KeyReusedWithDifferentRequest` to a Problem Details error and computes the request
   fingerprint (e.g. SHA-256 of the canonical create request) (step 6 done: `Chain:ChainId` feeds

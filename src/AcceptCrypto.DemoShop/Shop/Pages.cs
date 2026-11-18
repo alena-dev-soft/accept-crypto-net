@@ -90,11 +90,14 @@ internal static class Pages
         if (order.PaymentPageUrl is not null)
         {
             b.Append(CultureInfo.InvariantCulture, $"<p><a class=\"btn\" href=\"{E(order.PaymentPageUrl)}\">Open the payment page</a></p>");
-            b.Append(CultureInfo.InvariantCulture, $"""
+            if (!string.IsNullOrWhiteSpace(payerCommand))
+            {
+                b.Append(CultureInfo.InvariantCulture, $"""
                 <p class="muted">No wallet? Pay with the scripted payer (local chain):</p>
                 <pre>{E(payerCommand)} {E(order.PaymentPageUrl)}</pre>
                 <p class="muted">Add <code>--amount 1</code> (underpaid), <code>--amount 100</code> (overpaid) or <code>--split 2</code> (two partial transfers).</p>
                 """);
+            }
         }
 
         b.Append("</div><h2>Webhooks received for this order</h2>").Append(LogTable(log, showOrder: false));

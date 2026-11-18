@@ -20,6 +20,7 @@ New decisions are appended with the next number; a changed decision is marked *S
 | D13 | Local chain & derivation | Own minimal 6-decimal MockUsdc (artifact committed), deployed by the .NET payer at a fixed address; xpub at m/44'/60'/0'/0, child = invoice index; payer reads a public payment-details endpoint |
 | D18 | SDK | Package `AcceptCrypto.NET`, net10.0, no 3rd-party deps; `AddAcceptCrypto()` + typed HttpClient; Problem Details → typed exceptions; own `UsdcAmount`; constant-time HMAC over all secrets × all `v1=`; `MapAcceptCryptoWebhook` with pluggable dedup (in-memory default) |
 | D19 | Demo shop & one-command stack | Shop on the SDK only (server-rendered, JSON-file store with persistent dedup); compose: postgres, anvil (2 s blocks), one-off `deploy`, service, demoshop, `payer` (tools profile); test values inline with warnings |
+| D21 | Base Sepolia profile | `BaseSepolia` environment profile (chain 84532, Circle USDC, N = 60, getLogs range 200), separate compose file + git-ignored env file for secrets, `pay xpub` helper |
 
 ---
 
@@ -325,7 +326,7 @@ Re-scanning any range — after a restart, a lost checkpoint or a reorg rollback
 goes through `IInvoiceRepository.UpdateAsync` (invoice + outbox in one transaction, optimistic concurrency, NFR-2/3).
 
 **Confirmations (FR-7, D4).** Final when `head - block + 1 >= N`. Defaults: `Confirmations = 2` (local Anvil, fast
-demos); use 3+ on Base Sepolia. A confirmed transfer is final (D11): choose N above any reorg depth you expect.
+demos); on Base Sepolia see D21 (N = 60, blocks are much faster than assumed here). A confirmed transfer is final (D11): choose N above any reorg depth you expect.
 **On time** = block timestamp < `expires_at` (domain rule, D11).
 
 **Expiry worker.** `InvoiceExpiryProcessor` (looped by `InvoiceExpiryService` every `ExpiryInterval`) expires
@@ -628,3 +629,37 @@ non-parallel collection because OpenTelemetry listens to meters *by name* proces
 **CI.** `docs/ci/ci.yml` (to be copied to `.github/workflows/ci.yml` by the owner, see PROGRESS open points): pre-pull
 the PostgreSQL image, `dotnet test` with trx + coverage + `--blame-hang-timeout 5m`, test report via
 `dorny/test-reporter` (check run + job summary), coverage summary via ReportGenerator, artifacts; compose smoke job.
+
+## D21 — Base Sepolia profile, testnet guide, `pay xpub` (step 13)
+
+Guide: [testnet.md](testnet.md).
+
+**Profile = an ASP.NET Core environment.** `appsettings.BaseSepolia.json` is loaded with
+`ASPNETCORE_ENVIRONMENT=BaseSepolia` (Docker and `dotnet run --no-launch-profile`), so the non-secret chain settings
+live in one committed file; the compose file only adds secrets and Docker wiring. Alternatives rejected: settings
+only as compose env vars (not usable with `dotnet run`), a second launch profile (only for `dotnet run`).
+
+**Values.**
+- Chain ID 84532 (Base docs). Token `0x036CbD53842c5426634e7929541eC2318f3dCF7e` from Circle's official
+  [USDC contract addresses](https://developers.circle.com/stablecoins/usdc-contract-addresses) page (Testnet → Base
+  Sepolia); verified on-chain (`decimals()` = 6, `symbol()` = USDC).
+- `MaxBlockRange = 200`: the public RPC rejected larger `eth_getLogs` ranges when measured; providers differ, so it is
+  overridable (`CHAIN_MAX_BLOCK_RANGE`); the scanner's halving remains the safety net.
+- `Confirmations = 60`: measured ≈ 5 blocks/s on Base Sepolia (1,000 blocks in 200 s), so ≈ 12 s — long enough to
+  show `confirming` in the video and far above the unsafe-head reorgs one expects on a testnet L2; L1-based finality
+  (`safe`/`finalized` tags) stays on the roadmap. `ReorgRollbackDepth = 300` (> N). Poll 4 s (rate-limited RPCs).
+- `StartBlock` unset → first start scans from the head (scanning a public chain from block 0 is pointless);
+  afterwards the persisted checkpoint applies.
+- `MaxAmount = 100` (faucet-sized amounts), payment-page sample off.
+
+**Secrets.** RPC URL (often contains a provider key), API key, webhook secret and xpub only via env
+(`base-sepolia.env`, git-ignored by `*.env`; `base-sepolia.env.example` with placeholders is committed). Compose
+uses `${VAR:?message}` so a missing value stops `up` with a clear message.
+
+**`pay xpub [new]`.** MetaMask does not show an xpub, and the guide must not send people to random websites with
+their mnemonic, so the payer (already a test-only tool with Nethereum.HdWallet) gets an offline command. The
+mnemonic is read from `MERCHANT_MNEMONIC` (not a CLI argument → not in shell history; docs use `read -rs`), never
+printed back; the public test mnemonics are refused. `new` prints a fresh mnemonic once with a testnet-only warning.
+
+**Demo shop.** `Shop:PayerCommand = ""` hides the local scripted-payer hint so the testnet video shows only the
+MetaMask path.

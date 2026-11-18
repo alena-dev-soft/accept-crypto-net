@@ -8,6 +8,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\AcceptCrypto.LocalChain\AcceptCrypto.LocalChain.csproj" />
+    <PackageReference Include="Nethereum.HdWallet" />
   </ItemGroup>
 
   <ItemGroup>
