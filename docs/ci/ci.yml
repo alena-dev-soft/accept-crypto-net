@@ -8,6 +8,7 @@ on:
 
 permissions:
   contents: read
+  checks: write        # test report (dorny/test-reporter) as a check run
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -24,7 +25,7 @@ jobs:
     # ubuntu-latest ships a running Docker daemon, so Testcontainers-based
     # integration tests (PostgreSQL, Anvil) can run here without extra setup.
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
 
     steps:
       - uses: actions/checkout@v4
@@ -47,22 +48,53 @@ jobs:
       - name: Build
         run: dotnet build AcceptCrypto.NET.slnx --configuration Release --no-restore
 
-      - name: Test
+      - name: Pre-pull container images (keeps image download time out of test timeouts)
+        run: docker pull postgres:17-alpine
+
+      - name: Test (unit + integration + end-to-end on PostgreSQL and Anvil)
+        # --blame-hang-timeout: a hung test fails the run with a dump instead of stalling CI until the job timeout.
         run: >
           dotnet test AcceptCrypto.NET.slnx --configuration Release --no-build
           --logger "trx;LogFilePrefix=results"
+          --logger "console;verbosity=minimal"
           --results-directory ./TestResults
           --collect "XPlat Code Coverage"
+          --blame-hang-timeout 5m
+
+      - name: Test report
+        if: ${{ !cancelled() }}
+        uses: dorny/test-reporter@v2
+        with:
+          name: Test results
+          path: TestResults/*.trx
+          reporter: dotnet-trx
+          fail-on-error: true
+          use-actions-summary: true
+
+      - name: Coverage summary
+        if: ${{ !cancelled() }}
+        uses: danielpalme/ReportGenerator-GitHub-Action@5
+        with:
+          reports: TestResults/**/coverage.cobertura.xml
+          targetdir: coverage
+          reporttypes: MarkdownSummaryGithub;HtmlInline
+          assemblyfilters: +AcceptCrypto.*;-AcceptCrypto.*Tests
+
+      - name: Publish coverage summary
+        if: ${{ !cancelled() }}
+        run: cat coverage/SummaryGithub.md >> "$GITHUB_STEP_SUMMARY" || true
 
       - name: Pack SDK
         run: dotnet pack src/AcceptCrypto.Sdk/AcceptCrypto.Sdk.csproj --configuration Release --no-build --output ./artifacts
 
-      - name: Upload test results
+      - name: Upload test results and coverage
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: test-results
-          path: TestResults
+          path: |
+            TestResults
+            coverage
 
       - name: Upload NuGet package
         uses: actions/upload-artifact@v4

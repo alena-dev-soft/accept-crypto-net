@@ -7,8 +7,12 @@ using AcceptCrypto.Sdk.Webhooks;
 
 namespace AcceptCrypto.IntegrationTests.EndToEnd;
 
-/// <summary>NFR-7 on the running system: Prometheus metrics (chain lag, webhook queue, delivery outcomes) and health checks.</summary>
-[Collection(AnvilTestGroup.Name)]
+/// <summary>
+/// NFR-7 on the running system: Prometheus metrics (chain lag, webhook queue, delivery outcomes) and health checks.
+/// Runs alone (<see cref="ObservabilityTestGroup"/>): OpenTelemetry listens to meters by name process-wide, so service
+/// hosts of tests running in parallel would add their numbers to the scraped values.
+/// </summary>
+[Collection(ObservabilityTestGroup.Name)]
 public sealed class ObservabilityTests(AnvilFixture chain, PostgresFixture postgres)
 {
     [Fact]
@@ -86,4 +90,11 @@ public sealed class ObservabilityTests(AnvilFixture chain, PostgresFixture postg
             .ToList();
         return samples.Count == 0 ? -1 : samples.Sum();
     }
+}
+
+/// <summary>Own Anvil + PostgreSQL, and no other test runs in parallel with this collection.</summary>
+[CollectionDefinition(Name, DisableParallelization = true)]
+public sealed class ObservabilityTestGroup : ICollectionFixture<AnvilFixture>, ICollectionFixture<PostgresFixture>
+{
+    public const string Name = "observability";
 }

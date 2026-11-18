@@ -595,3 +595,36 @@ file: a stranger must be able to `docker compose up` without creating anything (
 **Known limitation.** Anvil keeps state in memory: `docker compose restart anvil` (or `down` without `-v`) gives a fresh
 chain while PostgreSQL keeps the old checkpoint and invoices. Reset with `docker compose down -v`.
 
+
+## D20 — End-to-end tests, observability, CI (step 11)
+
+**End-to-end harness.** `tests/AcceptCrypto.IntegrationTests/EndToEnd`: the real `Program` host via
+`WebApplicationFactory` with *all* background services on (scanner, expiry, dispatcher) — nothing is driven by hand —
+plus a merchant app on the SDK on real Kestrel (fixed port, so it can be stopped and started for S5) and the SDK's
+typed client. One test per scenario (S1–S7, FR-8/9, FR-10, FR-26), named after it, mapped in `docs/TESTS.md`. The
+lower-level tests from earlier steps stay: they pin exact edge cases deterministically (fake clock, manual passes);
+the E2E tests prove the parts work together.
+
+**Determinism in E2E.** Waits poll with a deadline and report the last state; webhook retries are fast
+(250 ms → 1 s) with a high attempt limit; after `anvil_reset` the chain clock is set to the wall clock (`evm_setTime`),
+because Anvil restarts at its genesis time and S4's on-time/late decision uses block timestamps.
+
+**Metrics: OpenTelemetry + Prometheus exporter** (`OpenTelemetry.Exporter.Prometheus.AspNetCore`, still a beta
+package — the stable alternative is OTLP; the exporter is isolated in `Service/Observability`). `GET /metrics`
+(configurable `Observability:MetricsPath`, off with `Observability:MetricsEnabled=false`), unauthenticated like
+`/health` — restrict it at the reverse proxy. Exported: the service meters `AcceptCrypto.Chain` and
+`AcceptCrypto.Webhooks` (existing instruments from steps 6/7) plus built-in ASP.NET Core, Kestrel, HttpClient and
+runtime meters. No tracing in the MVP.
+
+**Health.** New `webhooks` check (in `/health` and `/health/ready`): Degraded when events have failed (waiting for a
+manual resend) or the oldest pending event is older than 15 min; never Unhealthy, so a merchant outage does not get
+the service restarted (NFR-4).
+
+**Test-memory note.** OpenTelemetry preallocates metric storage per `MeterProvider`; hundreds of short-lived test
+hosts (and hosts that fail to start on purpose) exhausted a 1.5 GB container. API/scanner test hosts therefore run
+with `Observability:MetricsEnabled=false`; the E2E harness turns it on. The metrics test runs in its own
+non-parallel collection because OpenTelemetry listens to meters *by name* process-wide.
+
+**CI.** `docs/ci/ci.yml` (to be copied to `.github/workflows/ci.yml` by the owner, see PROGRESS open points): pre-pull
+the PostgreSQL image, `dotnet test` with trx + coverage + `--blame-hang-timeout 5m`, test report via
+`dorny/test-reporter` (check run + job summary), coverage summary via ReportGenerator, artifacts; compose smoke job.
