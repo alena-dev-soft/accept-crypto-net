@@ -38,7 +38,25 @@ public interface IOutboxRepository
     /// Returns null if the event does not exist; throws <see cref="DbUpdateConcurrencyException"/> if it changed meanwhile.
     /// </summary>
     Task<OutboxEvent?> UpdateAsync(Guid eventId, Action<OutboxEvent> change, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Claims up to <paramref name="limit"/> due pending events for delivery, in causal order, safe under parallel
+    /// dispatchers: <c>FOR UPDATE SKIP LOCKED</c> picks rows nobody else is claiming, and the claim moves their
+    /// <c>next_attempt_at</c> to <paramref name="leaseUntil"/>, so no other dispatcher takes them while the HTTP
+    /// request runs. If the claimer dies, the lease runs out and the event is picked up again (at-least-once).
+    /// </summary>
+    Task<IReadOnlyList<OutboxEvent>> ClaimDueAsync(DateTimeOffset now, DateTimeOffset leaseUntil, int limit, CancellationToken cancellationToken = default);
+
+    /// <summary>Queue statistics for metrics (NFR-7).</summary>
+    Task<OutboxQueueStats> GetQueueStatsAsync(DateTimeOffset now, CancellationToken cancellationToken = default);
 }
+
+/// <summary>Webhook queue statistics.</summary>
+/// <param name="Pending">Events waiting for delivery (due or scheduled for a retry).</param>
+/// <param name="Due">Pending events whose next attempt is due now.</param>
+/// <param name="Failed">Events that exhausted their retries (FR-14).</param>
+/// <param name="OldestPendingCreatedAt">Creation time of the oldest pending event, if any.</param>
+public sealed record OutboxQueueStats(long Pending, long Due, long Failed, DateTimeOffset? OldestPendingCreatedAt);
 
 /// <summary>EF Core implementation of <see cref="IUnmatchedPaymentRepository"/>.</summary>
 public sealed class UnmatchedPaymentRepository(
@@ -153,5 +171,48 @@ public sealed class OutboxRepository(IDbContextFactory<AcceptCryptoDbContext> co
         change(outboxEvent);
         await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
         return outboxEvent;
+    }
+
+    /// <inheritdoc />
+    public async Task<IReadOnlyList<OutboxEvent>> ClaimDueAsync(DateTimeOffset now, DateTimeOffset leaseUntil, int limit, CancellationToken cancellationToken = default)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(limit);
+        await using var db = await contextFactory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+        var pending = nameof(OutboxEventStatus.Pending);
+
+        // One statement = one transaction: lock due rows (skipping rows another dispatcher holds), push them behind
+        // the lease and return them. The CTE keeps the causal order for the caller.
+        var claimed = await db.OutboxEvents.FromSql($"""
+            WITH due AS (
+                SELECT id FROM outbox_events
+                WHERE status = {pending} AND next_attempt_at <= {now}
+                ORDER BY id
+                LIMIT {limit}
+                FOR UPDATE SKIP LOCKED)
+            UPDATE outbox_events o SET next_attempt_at = {leaseUntil}
+            FROM due WHERE o.id = due.id
+            RETURNING o.*, o.xmin
+            """).AsNoTracking().ToListAsync(cancellationToken).ConfigureAwait(false);
+        return [.. claimed.OrderBy(e => e.Id)];
+    }
+
+    /// <inheritdoc />
+    public async Task<OutboxQueueStats> GetQueueStatsAsync(DateTimeOffset now, CancellationToken cancellationToken = default)
+    {
+        await using var db = await contextFactory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+        var stats = await db.OutboxEvents.AsNoTracking()
+            .Where(e => e.Status != OutboxEventStatus.Delivered)
+            .GroupBy(_ => 1)
+            .Select(g => new
+            {
+                Pending = g.LongCount(e => e.Status == OutboxEventStatus.Pending),
+                Due = g.LongCount(e => e.Status == OutboxEventStatus.Pending && e.NextAttemptAt <= now),
+                Failed = g.LongCount(e => e.Status == OutboxEventStatus.Failed),
+                Oldest = g.Where(e => e.Status == OutboxEventStatus.Pending).Min(e => (DateTimeOffset?)e.CreatedAt),
+            })
+            .SingleOrDefaultAsync(cancellationToken).ConfigureAwait(false);
+        return stats is null
+            ? new OutboxQueueStats(0, 0, 0, null)
+            : new OutboxQueueStats(stats.Pending, stats.Due, stats.Failed, stats.Oldest);
     }
 }

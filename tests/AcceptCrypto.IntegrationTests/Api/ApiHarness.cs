@@ -32,6 +32,7 @@ internal static class TestMerchant
         ["Merchant:PreviousWebhookSecret"] = PreviousWebhookSecret,
         ["Merchant:WebhookUrl"] = "https://merchant.example/webhooks",
         ["Merchant:Xpub"] = Xpub,
+        ["Webhooks:DispatcherEnabled"] = "false", // the API tests drive the outbox themselves
     };
 }
 

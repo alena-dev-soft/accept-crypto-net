@@ -29,6 +29,27 @@ public sealed class WebhookOptions
     /// <summary>HTTP timeout of one delivery attempt.</summary>
     public TimeSpan RequestTimeout { get; set; } = TimeSpan.FromSeconds(10);
 
+    /// <summary>Runs the webhook dispatcher (background service). On by default; tests switch it off to drive it by hand.</summary>
+    public bool DispatcherEnabled { get; set; } = true;
+
+    /// <summary>How often the dispatcher looks for due events when the queue is idle.</summary>
+    public TimeSpan PollInterval { get; set; } = TimeSpan.FromSeconds(1);
+
+    /// <summary>Events claimed per dispatcher pass.</summary>
+    public int BatchSize { get; set; } = 20;
+
+    /// <summary>Deliveries running in parallel within one pass.</summary>
+    public int MaxParallelDeliveries { get; set; } = 4;
+
+    /// <summary>
+    /// How long a claimed event is hidden from other dispatchers while its request runs. Must exceed
+    /// <see cref="RequestTimeout"/>; if a dispatcher dies mid-delivery the event is retried after the lease.
+    /// </summary>
+    public TimeSpan ClaimLease { get; set; } = TimeSpan.FromMinutes(2);
+
+    /// <summary>Delay before the dispatcher retries after a database error (doubles up to <see cref="MaxRetryDelay"/>).</summary>
+    public TimeSpan DispatcherErrorDelay { get; set; } = TimeSpan.FromSeconds(2);
+
     /// <summary>True if <paramref name="host"/> is on <see cref="AllowedHosts"/>.</summary>
     public bool IsAllowlisted(string host)
     {
@@ -56,6 +77,18 @@ public sealed class WebhookOptions
         else if (RequestTimeout <= TimeSpan.Zero)
         {
             error = "Webhooks: RequestTimeout must be positive.";
+        }
+        else if (PollInterval <= TimeSpan.Zero || DispatcherErrorDelay <= TimeSpan.Zero)
+        {
+            error = "Webhooks: PollInterval and DispatcherErrorDelay must be positive.";
+        }
+        else if (BatchSize < 1 || MaxParallelDeliveries < 1)
+        {
+            error = "Webhooks: BatchSize and MaxParallelDeliveries must be at least 1.";
+        }
+        else if (ClaimLease <= RequestTimeout)
+        {
+            error = "Webhooks: ClaimLease must be longer than RequestTimeout.";
         }
         else if (AllowedHosts.Any(string.IsNullOrWhiteSpace))
         {

@@ -38,8 +38,12 @@ public sealed class OutboxAtomicityTests(PostgresFixture postgres)
         Assert.Equal(stored[^1].EventId, root.GetProperty("id").GetGuid());
         Assert.Equal("invoice.expired", root.GetProperty("type").GetString());
         Assert.Equal("underpaid", root.GetProperty("data").GetProperty("previous_status").GetString());
-        Assert.Equal("4", root.GetProperty("data").GetProperty("confirmed_total").GetString());
-        Assert.Equal("10", root.GetProperty("data").GetProperty("amount").GetString());
+        var snapshot = root.GetProperty("data").GetProperty("invoice");
+        Assert.Equal(invoice.Id, snapshot.GetProperty("id").GetGuid());
+        Assert.Equal("expired", snapshot.GetProperty("status").GetString());
+        Assert.Equal("4", snapshot.GetProperty("confirmed_total").GetString());
+        Assert.Equal("10", snapshot.GetProperty("amount").GetString());
+        Assert.Equal("6", snapshot.GetProperty("remaining_amount").GetString());
     }
 
     [Fact]

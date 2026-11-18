@@ -33,6 +33,7 @@ public sealed class OutboxEvent
         Payload = payload;
         CreatedAt = createdAt;
         NextAttemptAt = createdAt;
+        RetryCycleStartedAt = createdAt;
         Status = OutboxEventStatus.Pending;
     }
 
@@ -66,6 +67,12 @@ public sealed class OutboxEvent
     /// <summary>When the event was created.</summary>
     public DateTimeOffset CreatedAt { get; private set; }
 
+    /// <summary>
+    /// Start of the current retry cycle: creation, or the last manual resend. The retry window (FR-14) is counted
+    /// from here, so a resent old event gets a full window again.
+    /// </summary>
+    public DateTimeOffset RetryCycleStartedAt { get; private set; }
+
     /// <summary>When the next attempt is due (meaningful while <see cref="OutboxEventStatus.Pending"/>).</summary>
     public DateTimeOffset NextAttemptAt { get; private set; }
 
@@ -97,6 +104,12 @@ public sealed class OutboxEvent
         Attempts++;
         _deliveryAttempts.Add(new WebhookDeliveryAttempt(at, httpStatus, error, duration));
         LastError = error;
+        if (Status != OutboxEventStatus.Pending)
+        {
+            // Delivered by a parallel attempt meanwhile (e.g. after a resend): keep the history, not the status.
+            return;
+        }
+
         if (nextAttemptAt is { } next)
         {
             NextAttemptAt = next;
@@ -113,6 +126,7 @@ public sealed class OutboxEvent
         Status = OutboxEventStatus.Pending;
         Attempts = 0;
         NextAttemptAt = now;
+        RetryCycleStartedAt = now;
         DeliveredAt = null;
     }
 }

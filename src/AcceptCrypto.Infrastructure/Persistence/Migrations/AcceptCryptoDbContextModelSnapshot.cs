@@ -205,6 +205,10 @@ namespace AcceptCrypto.Infrastructure.Persistence.Migrations
                         .HasColumnType("text")
                         .HasColumnName("payload");
 
+                    b.Property<DateTimeOffset>("RetryCycleStartedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("retry_cycle_started_at");
+
                     b.Property<string>("Status")
                         .IsRequired()
                         .HasMaxLength(16)

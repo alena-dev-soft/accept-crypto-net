@@ -2,8 +2,8 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using AcceptCrypto.Infrastructure.Chain;
 using AcceptCrypto.Infrastructure.Chain.Scanning;
-using AcceptCrypto.Infrastructure.Merchant;
 using AcceptCrypto.Infrastructure.Persistence;
+using AcceptCrypto.Infrastructure.Webhooks;
 using AcceptCrypto.Service;
 using AcceptCrypto.Service.Api;
 using AcceptCrypto.Service.Configuration;
@@ -21,7 +21,7 @@ var configuration = builder.Configuration;
 builder.Services.AddAcceptCryptoPersistence(configuration);
 builder.Services.AddAcceptCryptoDepositAddresses(configuration);
 builder.Services.AddAcceptCryptoChainScanner(configuration);
-builder.Services.AddAcceptCryptoMerchant(configuration);
+builder.Services.AddAcceptCryptoWebhooks(configuration); // merchant config (FR-0), SSRF guard, outbox dispatcher
 builder.Services.AddOptions<InvoiceOptions>().Bind(configuration.GetSection(InvoiceOptions.SectionName)).ValidateOnStart();
 builder.Services.AddSingleton<IValidateOptions<InvoiceOptions>, InvoiceOptionsValidator>();
 builder.Services.AddOptions<ApiOptions>().Bind(configuration.GetSection(ApiOptions.SectionName))
