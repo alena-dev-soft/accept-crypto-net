@@ -8,10 +8,12 @@ using AcceptCrypto.Service;
 using AcceptCrypto.Service.Api;
 using AcceptCrypto.Service.Configuration;
 using AcceptCrypto.Service.Health;
+using AcceptCrypto.Service.PaymentPage;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.AspNetCore.Http.Json;
 using Microsoft.Extensions.Options;
+using System.Threading.RateLimiting;
 using Scalar.AspNetCore;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -54,6 +56,25 @@ builder.Services.AddProblemDetails(o => o.CustomizeProblemDetails = ctx =>
 builder.Services.AddExceptionHandler<ApiExceptionHandler>();
 builder.Services.AddSingleton<ApiMapper>();
 
+// Public payment page (FR-4, FR-29, FR-30): /pay/{token}, /api/public/invoices/{token}; per-IP rate limit.
+builder.Services.AddOptions<PaymentPageOptions>().Bind(configuration.GetSection(PaymentPageOptions.SectionName))
+    .Validate(o => o.IsValid(), "Invalid PaymentPage configuration (PollInterval 0.5 s–1 min, RateLimitPerMinute > 0, MerchantDisplayName <= 80 chars).")
+    .ValidateOnStart();
+builder.Services.AddSingleton<PublicInvoiceMapper>();
+builder.Services.AddSingleton<PublicViewJson>();
+builder.Services.AddSingleton<PaymentPageResolver>();
+builder.Services.AddSingleton<PaymentPageRenderer>();
+builder.Services.AddRateLimiter(o =>
+{
+    o.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+    o.AddPolicy(PaymentPageEndpoints.RateLimitPolicy, http =>
+    {
+        var limit = http.RequestServices.GetRequiredService<IOptionsMonitor<PaymentPageOptions>>().CurrentValue.RateLimitPerMinute;
+        return RateLimitPartition.GetFixedWindowLimiter(http.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+            _ => new FixedWindowRateLimiterOptions { PermitLimit = limit, Window = TimeSpan.FromMinutes(1) });
+    });
+});
+
 // Authentication (FR-17).
 builder.Services.AddAuthentication(ApiKeyAuthenticationHandler.SchemeName)
     .AddScheme<AuthenticationSchemeOptions, ApiKeyAuthenticationHandler>(ApiKeyAuthenticationHandler.SchemeName, null);
@@ -88,12 +109,14 @@ app.UseExceptionHandler();
 app.UseStatusCodePages();
 app.UseAuthentication();
 app.UseAuthorization();
+app.UseRateLimiter();
 
 app.MapHealthChecks("/health", new HealthCheckOptions { Predicate = c => !c.Tags.Contains(HealthTags.Ready) });
 app.MapHealthChecks("/health/ready", new HealthCheckOptions { ResponseWriter = HealthReportWriter.WriteAsync });
 app.MapOpenApi();
 app.MapScalarApiReference();
 app.MapMerchantApi();
+app.MapPaymentPage();
 app.MapGet("/", () => Results.Text(
     "AcceptCrypto.NET service is running. API reference: /scalar, OpenAPI: /openapi/v1.json, health: /health, /health/ready."))
     .ExcludeFromDescription();

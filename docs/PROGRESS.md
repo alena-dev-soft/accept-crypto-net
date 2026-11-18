@@ -11,7 +11,7 @@ Spec: `AcceptCrypto.NET_SPEC.md` (project file, not in the repo). Decisions: [DE
 - [x] **Local chain: Anvil, mock USDC, xpub derivation (former 5), scripted payer, chain test helpers** (see step notes, DECISIONS D13)
 - [x] **6. Chain scanner: eth_getLogs, checkpoint, chunking, confirmations, reorg handling, unmatched, expiry** (see step notes, DECISIONS D14)
 - [x] **7. Webhooks: outbox dispatcher (SKIP LOCKED + lease, per-invoice order), HMAC-SHA256 signing, rotation, backoff + jitter, failed state, resend, metrics** (see step notes, DECISIONS D16, [webhooks.md](webhooks.md))
-- [ ] 8. Payment page: instructions + QR + live status
+- [x] **8. Payment page: instructions + QR (EIP-681) + live status (polling), public status JSON** (see step notes, DECISIONS D17, API.md §Payment page)
 - [ ] 9. SDK: DI registration, typed client, webhook verification, typed events, README, tests
 - [ ] 10. Demo shop (scripted payer and mock USDC are done in the local-chain step)
 - [ ] 11. One-command stack (docker compose), integration tests (Testcontainers, forced reorg), S1–S7
@@ -343,6 +343,49 @@ Next steps rely on: SDK (step 9) implements verification per webhooks.md §2 (te
 events per §3; demo shop (step 10) receives at `/webhooks/acceptcrypto`; compose (step 11) sets
 `Webhooks__AllowedHosts__0=demo-shop` and the demo retry profile.
 
+### Step 8 — public payment page with QR and live status (done)
+
+Decisions: **D17**; contract: [API.md § Payment page](API.md#payment-page-fr-4-fr-29-fr-30).
+Screenshots (real invoice on Anvil, scripted payer): `docs/images/payment-page-{pending,confirming,paid}.png`.
+
+- `src/AcceptCrypto.Service/PaymentPage/`: `PaymentPageEndpoints` (`GET /pay/{token}`, `/pay/{token}/qr.svg`,
+  `/pay/assets/{name}`, `GET /api/public/invoices/{token}` — in OpenAPI under tag "Public", no auth),
+  `PublicInvoiceView` + `PublicInvoiceMapper` (allowlist view, confirmation progress from `ChainScanState.Head`,
+  EIP-55 address, `Eip681`), `PaymentPageResolver` (token shape check, DB lookup, Development sample),
+  `PaymentPageRenderer` (HTML template), `QrCodes` (QRCoder SVG), `PaymentPageAssets` + `Assets/pay.css`, `pay.js`
+  (embedded resources), `PaymentPageOptions` (section `PaymentPage`). Wired in `Program.cs` incl. `AddRateLimiter`.
+- Page shows network, token (+ contract), deposit address, exact amount, deadline with countdown, status; copy
+  buttons; QR toggle "Wallet link" (EIP-681, remaining amount) / "Address only". Status texts per status: pending,
+  confirming (n of N + progress bar), underpaid (remaining), paid, overpaid (excess), expired (with/without partial),
+  paid_late, cancelled, and "deadline passed" while the expiry worker has not yet run.
+- The scripted payer's public path (`api/public/invoices/{token}`, flat JSON with `address`/`amount`/`status`/
+  `chain_id`/`token_address`/`expires_at`) now works: `pay http://host/pay/<token>` needs no API key.
+- Tests (`IntegrationTests/Api/PaymentPageTests.cs`, 11): no order ID / metadata / invoice ID / idempotency key / sender
+  in page, JSON or QR + exact JSON field set; page from the `payment_page_url` of POST /v1/invoices; unknown and
+  malformed tokens → 404 (JSON Problem Details, HTML, QR); status JSON through pending → confirming (1 of 2) →
+  underpaid (remaining 6, EIP-681 with 6000000) → paid; overpaid/cancelled/past deadline → no payment requested;
+  security headers + CSP; HTML encoding of config; rate limit 429 (merchant API unaffected); scripted payer via the
+  public endpoint; sample mode; EIP-681 format.
+- Verified end to end (local PostgreSQL 15 + Anvil + scripted payer + Playwright/Chromium): invoice created via
+  POST /v1/invoices, page opened from `payment_page_url`, `pay <url> --amount 10` → page shows "confirming 1 of 2",
+  `pay mine 2` → "Partially paid, send the remaining 15.5", top-up + mine → "Payment received" — all with **one page
+  load** and no JS errors. Whole solution green: 135 + 110 + 1 + 148 tests.
+
+Try it:
+
+```bash
+# Preview / no DB: Development has PaymentPage:EnableSample=true
+open http://localhost:$PORT/pay/sample?status=confirming     # pending|confirming|underpaid|paid|overpaid|expired|paid_late|cancelled
+# Real cycle: scripts/local-chain.sh, then run the service with Chain__Enabled=true and a database, create an invoice
+# (see Step 4 — merchant REST API), open its payment_page_url and run:
+dotnet run --project src/AcceptCrypto.Payer -- <payment_page_url> --amount 10 && dotnet run --project src/AcceptCrypto.Payer -- mine 2
+```
+
+Notes for next steps: demo shop (step 10) redirects the customer to `payment_page_url`; compose (step 11) sets
+`PaymentPage__MerchantDisplayName=Demo Shop` and `Api__PublicBaseUrl` to the host-visible URL; README (step 12) can use
+`docs/images/payment-page-*.png` (or `/pay/sample`) — Playwright's `waitForFunction` is blocked by the page CSP, poll
+`textContent` instead.
+
 ## Open points
 
 - **CI activation (manual, owner):** the platform's GitHub token lacks the `workflow` scope, so the workflow cannot be
@@ -351,7 +394,7 @@ events per §3; demo shop (step 10) receives at `/webhooks/acceptcrypto`; compos
 
 - CI badge added to README (repo: github.com/alena-dev-soft/accept-crypto-net).
 - Default N confirmations (D4): 2 (local Anvil), recommend 3+ on Base Sepolia — see D14. Open: unmatched rows from reorged blocks are not removed (D14 known limitation).
-- Payment page UI technology (D8) is chosen in step 8.
+- Payment page UI technology: chosen in step 8 (D17: server-rendered HTML + vanilla JS, polling).
 - Step 3 follow-ups: step 4 maps `KeyReusedWithDifferentRequest` to a Problem Details error and computes the request
   fingerprint (e.g. SHA-256 of the canonical create request) (step 6 done: `Chain:ChainId` feeds
   `Persistence:ChainId`, `InvoiceClosed` transfers are recorded as unmatched); step 7 done (claiming with `FOR UPDATE SKIP LOCKED`, per-invoice order, D16); step 11 compose sets

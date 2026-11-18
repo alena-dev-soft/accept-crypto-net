@@ -21,6 +21,14 @@ The service's REST API for the merchant's backend (the SDK wraps it). Machine-re
 | `GET /v1/unmatched-payments` | Transfers that matched no open invoice (FR-11a) | `200` | 400, 401 |
 | `POST /v1/events/{eventId}/resend` | Queue a webhook event again, same event ID and payload (FR-15) | `202` | 401, 404, 409 |
 
+Public (no API key; the unguessable token from `payment_page_url` is the capability) — see [Payment page](#payment-page-fr-4-fr-29-fr-30):
+
+| Method & path | What | Success | Errors |
+| --- | --- | --- | --- |
+| `GET /pay/{token}` | Payer's HTML payment page (instructions, QR, live status) | `200` | 404 (HTML), 429 |
+| `GET /pay/{token}/qr.svg?mode=uri\|address` | QR code (EIP-681 link for the remaining amount, or the address) | `200` | 404, 429 |
+| `GET /api/public/invoices/{token}` | Payer-safe status JSON (also used by the scripted payer) | `200` | 404 `invoice_not_found`, 429 |
+
 ### Create
 
 ```http
@@ -95,6 +103,41 @@ Unmatched payment: `id`, `chain_id`, `tx_hash`, `log_index`, `block_number`, `bl
 Resets the event to `pending` with a fresh retry budget and `next_attempt_at = now`; the event ID and the payload
 bytes are unchanged, so the merchant deduplicates by event ID (FR-16). Delivery history is kept.
 
+## Payment page (FR-4, FR-29, FR-30)
+
+`payment_page_url` = `{Api:PublicBaseUrl}/pay/{token}`; the token is 32 random bytes (base64url, 43 chars). The page
+renders the payment facts on the server and updates the status block by polling the JSON endpoint every
+`PaymentPage:PollInterval` (default 3 s; slower when `expired`, stops on a final status, backs off on errors, pauses
+in background tabs) — no reload needed.
+
+`GET /api/public/invoices/{token}` — the complete field list (a test pins it; nothing else is ever returned, in
+particular **no invoice ID, `external_order_id`, `metadata`, idempotency key or sender addresses**):
+
+```json
+{
+  "status": "underpaid",
+  "network": "Anvil (local)", "chain_id": 31337,
+  "token": "USDC", "token_address": "0x5FbDB2315678afecb367f032d93F642f64180aa3", "decimals": 6,
+  "address": "0xb6716976A3ebe8D39aCEB04372f22Ff8e6802D7A",
+  "amount": "25.5", "paid_amount": "10", "pending_amount": "0", "remaining_amount": "15.5", "excess_amount": "0",
+  "expires_at": "2026-11-18T02:56:00+00:00",
+  "confirmations": null,
+  "payment_uri": "ethereum:0x5FbDB2315678afecb367f032d93F642f64180aa3@31337/transfer?address=0xb671…2D7A&uint256=15500000",
+  "accepting_payment": true,
+  "server_time": "2026-11-18T02:26:15+00:00"
+}
+```
+
+- `paid_amount` = confirmed total, `pending_amount` = seen but unconfirmed, `remaining_amount` = amount − confirmed.
+- `confirmations` = `{"current": 1, "required": 2}` while a seen payment waits (least-confirmed one; `current` is null
+  until the scanner knows the head), else null.
+- `accepting_payment` = status `pending`/`underpaid` and the deadline not passed. Only then is `payment_uri` set
+  (EIP-681 ERC-20 transfer of the **remaining** amount in base units; null without `Chain:TokenAddress`).
+- `address` is EIP-55 checksummed. `status` uses the merchant API's values.
+- Headers on all public responses: `Cache-Control: no-store`, `Referrer-Policy: no-referrer` (the token is in the URL),
+  `X-Robots-Tag: noindex`; the page also has a strict CSP (`script-src 'self'`, no inline code) and `X-Frame-Options: DENY`.
+- Per-IP fixed-window rate limit (`PaymentPage:RateLimitPerMinute`, default 120) → `429`.
+
 ## Errors (FR-20)
 
 Every error is RFC 9457 Problem Details (`application/problem+json`) with a stable `code` extension and `trace_id`:
@@ -164,6 +207,9 @@ does not start with missing or invalid values, and validation messages never con
 | `Webhooks:DispatcherEnabled` / `PollInterval` / `BatchSize` / `MaxParallelDeliveries` / `ClaimLease` / `DispatcherErrorDelay` | Dispatcher (default on, 1 s, 20, 4, 2 min, 2 s) |
 | `Api:PublicBaseUrl` | Base of payment page links; default: the request's scheme/host |
 | `Api:DefaultPageSize` / `MaxPageSize` | 50 / 200 |
+| `PaymentPage:MerchantDisplayName` | Optional name in the page header (e.g. `Demo Shop`) |
+| `PaymentPage:PollInterval` / `RateLimitPerMinute` | Page polling interval (0.5 s–1 min, default 3 s) / public rate limit per IP (default 120/min) |
+| `PaymentPage:EnableSample` | `/pay/sample?status=pending\|confirming\|underpaid\|paid\|overpaid\|expired\|paid_late\|cancelled` with fabricated data, no DB (Development only; default off) |
 | `Chain:ChainId`, `Chain:NetworkName`, `Chain:TokenSymbol`, `Chain:TokenAddress`, `Chain:Confirmations` | Shown in payment details; scanner settings see DECISIONS D14 |
 
 `appsettings.Development.json` contains throwaway development values (dummy key/secret, the public test mnemonic's

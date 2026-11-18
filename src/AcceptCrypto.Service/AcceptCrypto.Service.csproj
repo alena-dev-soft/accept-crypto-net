@@ -7,11 +7,17 @@
   <ItemGroup>
     <PackageReference Include="Microsoft.AspNetCore.OpenApi" />
     <PackageReference Include="Scalar.AspNetCore" />
+    <PackageReference Include="QRCoder" />
   </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\AcceptCrypto.Domain\AcceptCrypto.Domain.csproj" />
     <ProjectReference Include="..\AcceptCrypto.Infrastructure\AcceptCrypto.Infrastructure.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="PaymentPage\Assets\*" LogicalName="AcceptCrypto.Service.PaymentPage.Assets.%(Filename)%(Extension)" />
+    <Content Remove="PaymentPage\Assets\*" />
   </ItemGroup>
 
   <ItemGroup>

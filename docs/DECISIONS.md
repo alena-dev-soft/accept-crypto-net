@@ -119,7 +119,7 @@ Integration tests use Testcontainers (PostgreSQL, Anvil) on a real Docker daemon
 **Decision.** A simple server-rendered public page addressed by an unguessable invoice token (FR-29):
 network, token, address, exact amount, deadline, a QR code and live status (polling or SSE, FR-30).
 **No browser wallet connection** in the MVP (roadmap). The UI technology is chosen when the page is built
-(kept lightweight, rendered by the service itself).
+(kept lightweight, rendered by the service itself). → Chosen in step 8, see **D17**.
 
 ## D9 — Deployment
 
@@ -463,3 +463,40 @@ refreshed by the dispatcher), attempts by outcome and duration.
 **Hosting.** `AddAcceptCryptoWebhooks` (merchant options + SSRF guard + named `HttpClient` with the guarded handler +
 dispatcher); `Webhooks:DispatcherEnabled=false` turns the background service off (API tests). Without a database the
 dispatcher logs and backs off (max 1 min); `/health` stays green, as the Preview needs.
+
+## D17 — Payment page: technology, live status, QR, privacy (step 8)
+
+**Technology: server-rendered HTML from a minimal-API endpoint + one small vanilla JS file (no Razor Pages, no
+Blazor, no JS framework, no CDN).** The page is a single screen with ~10 dynamic values; Razor Pages/Blazor would add
+MVC/Razor/circuit infrastructure to an API-only service for no gain, and a SPA framework would need a JS build. The HTML
+is a C# raw-string template (`PaymentPageRenderer`, every value `HtmlEncoder`-encoded); `pay.css`/`pay.js` are embedded
+resources served at `/pay/assets/*?v={sha256}`. Static facts (address, amount, network, token, deadline, QR) are
+rendered on the server, so the page is useful without JS; the status block is filled by JS from the embedded initial
+state and then from polling.
+
+**Live status: polling, not SSE.** `GET /api/public/invoices/{token}` every 3 s (configurable). Reasons: status changes
+come from background workers (scanner/expiry) in possibly other instances — SSE would need a change feed (LISTEN/NOTIFY
+or per-connection DB polling anyway); polling works through every proxy, needs no long-lived connections, and the same
+JSON serves the scripted payer. The client slows down for `expired` (late payment possible), stops on final statuses
+(`paid`, `overpaid`, `paid_late`, `cancelled`), backs off exponentially on errors (max 30 s, "Reconnecting…"), stops on
+404 and pauses in hidden tabs.
+
+**Public view is an allowlist type.** `PublicInvoiceView` is the only thing the page, QR and JSON are built from; it has
+no invoice ID, order ID, metadata, idempotency key or transfer senders. A test pins the exact JSON field set and checks
+that page/JSON/QR never contain the order ID, metadata, invoice ID or payer address.
+
+**QR.** Server-side SVG via QRCoder (MIT, no native deps). Default content is an EIP-681 ERC-20 transfer URI
+(`ethereum:{token}@{chainId}/transfer?address={deposit}&uint256={baseUnits}`) for the **remaining** amount, so an
+underpaid invoice's QR asks for the top-up; an "Address only" toggle shows a plain-address QR for wallets without
+EIP-681 support. The QR is only shown while `accepting_payment` (pending/underpaid before the deadline); after the
+deadline, when paid or cancelled the page says not to send funds.
+
+**Token handling / hardening.** 256-bit token; malformed tokens are rejected without a DB query; unknown → 404 (Problem
+Details for JSON, a friendly HTML page otherwise). `Cache-Control: no-store`, `Referrer-Policy: no-referrer`,
+`X-Robots-Tag: noindex`, strict CSP without `unsafe-inline` (hence no inline script/style), `X-Frame-Options: DENY`,
+per-IP fixed-window rate limit (120/min). Deposit addresses are shown EIP-55-checksummed (stored lowercase).
+
+**Sample mode.** `PaymentPage:EnableSample` (Development only) serves `/pay/sample?status=…` with fabricated data and no
+database, for design review in the Preview and README screenshots.
+
+**Not done / roadmap:** wallet connection (D8), localisation, SSE/WebSocket push.
