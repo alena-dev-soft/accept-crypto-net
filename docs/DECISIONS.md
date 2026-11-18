@@ -18,6 +18,7 @@ New decisions are appended with the next number; a changed decision is marked *S
 | D10 | Solution layout & tooling | .NET 10, layered projects, central package management, warnings as errors |
 | D11 | Domain model & edge cases | BigInteger base units; status derived from facts, walked along diagram edges; `expired → confirming` for on-time payments found late; late overpay → `paid_late` |
 | D13 | Local chain & derivation | Own minimal 6-decimal MockUsdc (artifact committed), deployed by the .NET payer at a fixed address; xpub at m/44'/60'/0'/0, child = invoice index; payer reads a public payment-details endpoint |
+| D18 | SDK | Package `AcceptCrypto.NET`, net10.0, no 3rd-party deps; `AddAcceptCrypto()` + typed HttpClient; Problem Details → typed exceptions; own `UsdcAmount`; constant-time HMAC over all secrets × all `v1=`; `MapAcceptCryptoWebhook` with pluggable dedup (in-memory default) |
 
 ---
 
@@ -500,3 +501,50 @@ per-IP fixed-window rate limit (120/min). Deposit addresses are shown EIP-55-che
 database, for design review in the Preview and README screenshots.
 
 **Not done / roadmap:** wallet connection (D8), localisation, SSE/WebSocket push.
+
+## D18 — SDK (`AcceptCrypto.NET` NuGet package, step 9)
+
+**Package.** Project `src/AcceptCrypto.Sdk`, package ID **`AcceptCrypto.NET`** (D10), `net10.0` only (FR-22: no
+`net8.0` target — the MVP does not deliberately target older apps). Only dependency: the `Microsoft.AspNetCore.App`
+shared framework (DI, options, `IHttpClientFactory`, logging, routing) — no third-party packages. README, MIT license
+expression, repository URL + commit, XML docs, `.snupkg` symbols; SourceLink comes from the .NET SDK
+(`PublishRepositoryUrl`, `EmbedUntrackedSources`), verified: the PDB maps sources to `raw.githubusercontent.com/…/<commit>`.
+
+**Registration (FR-23).** `services.AddAcceptCrypto()` binds section `AcceptCrypto` (`BindConfiguration`, so reloads
+work); overloads take an `Action<AcceptCryptoOptions>` (applied after the section) or an `IConfiguration` section.
+Returns the typed client's `IHttpClientBuilder` so the merchant can add a resilience handler. Options are validated
+at startup (`ValidateOnStart`, messages without secret values); `BaseUrl`/`ApiKey` are checked when the client is
+used and `WebhookSecret` when the endpoint is mapped, so a webhook-only or client-only app needs only its half.
+
+**Money.** The SDK has its own `UsdcAmount` (BigInteger base units, JSON string, numbers refused) — it cannot reference
+the Domain project (it ships alone). Unmatched payments can carry up to uint256 amounts, which `decimal` cannot hold;
+`ToDecimal()` is offered for convenience.
+
+**Client (FR-24/25).** `IAcceptCryptoClient`: create (idempotency key: caller's, else a generated GUID so HTTP-level
+retries are safe; `CreatedInvoice.IdempotentReplayed` from `Idempotent-Replayed`), get (details), list + `ListAll…`
+async enumerators following the cursor, cancel, unmatched list, resend. The API key is added per request from
+`IOptionsMonitor` (key rotation without restart). Errors: Problem Details → `AcceptCryptoApiException` subclasses by
+status (400 validation, 401 authentication, 404 not found, 409 conflict with `CurrentStatus`, 422 idempotency key
+reused with `InvoiceId`), anything else → `AcceptCryptoApiException` with `StatusCode`/`ErrorCode`/`TraceId`/
+`Extensions`; network errors and timeouts → `AcceptCryptoConnectionException`; caller cancellation stays
+`OperationCanceledException`; an unexpected payload → `AcceptCryptoException`. Enums deserialize tolerantly: unknown
+values (a newer service) become `Unknown` instead of breaking the merchant's app.
+
+**Webhooks (FR-26/27, FR-16).** `AcceptCryptoWebhookVerifier` (usable without ASP.NET Core) implements
+docs/webhooks.md §2: missing headers / non-numeric timestamp / `|now − ts| > tolerance` (default 5 min, max 1 h) /
+no matching `v1=` entry → rejected; every configured secret is compared with every `v1=` entry using
+`CryptographicOperations.FixedTimeEquals` without early exit; unknown schemes ignored; at most 8 entries examined.
+Secrets: `WebhookSecret` + `AdditionalWebhookSecrets` (rotation, read per request). Typed events:
+`InvoiceStatusChangedEvent` (Status/PreviousStatus), `PaymentRevertedEvent` (Transfer), `UnknownAcceptCryptoEvent`
+(newer types, raw `data`); every event carries the invoice snapshot and the raw JSON. A body without
+`id`/`type`/`api_version`/`data.invoice` is malformed (400).
+`MapAcceptCryptoWebhook(pattern, handler)` (handler `(AcceptCryptoEvent)`, `(AcceptCryptoEvent, HttpContext)` or a DI
+class `IAcceptCryptoWebhookHandler`): raw body with size limit (413) → verify (400 Problem Details with a short
+reason, logged as a warning without secrets) → `IWebhookEventDeduplicator.TryBeginAsync` (already processed → 200
+without calling the handler; in progress → 409 so the service retries) → handler → `CompleteAsync` and 200, or on
+exception `AbandonAsync`, error log and 500 (retry). Default deduplicator: in memory (7 days, 100 000 IDs, stale
+claims expire after 5 min); a multi-instance merchant registers a DB-backed one.
+
+**Contract safety.** `IntegrationTests/Api/SdkContractTests.cs` runs the SDK client against the real service (real
+PostgreSQL) and verifies webhooks produced by the real dispatcher during a rotation, so the two sides cannot drift
+apart unnoticed.

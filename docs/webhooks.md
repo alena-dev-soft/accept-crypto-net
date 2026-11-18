@@ -4,8 +4,9 @@ Spec: FR-0, FR-12–FR-16, NFR-2, NFR-4, NFR-6, NFR-7. Code: `src/AcceptCrypto.I
 (`WebhookDispatcher`, `WebhookSignature`, `WebhookRetryPolicy`, `WebhookMetrics`), payload:
 `src/AcceptCrypto.Infrastructure/Persistence/OutboxEventFactory.cs`. Decisions: [DECISIONS.md](DECISIONS.md) D16.
 
-This document is the contract between the service and the merchant's receiver (the SDK in step 9 implements the
-receiving side of it).
+This document is the contract between the service and the merchant's receiver. The SDK implements the receiving side
+(`AcceptCryptoWebhookVerifier`, `MapAcceptCryptoWebhook` — see [src/AcceptCrypto.Sdk/README.md](../src/AcceptCrypto.Sdk/README.md),
+DECISIONS D18).
 
 ## 1. The request
 

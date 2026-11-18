@@ -12,7 +12,7 @@ Spec: `AcceptCrypto.NET_SPEC.md` (project file, not in the repo). Decisions: [DE
 - [x] **6. Chain scanner: eth_getLogs, checkpoint, chunking, confirmations, reorg handling, unmatched, expiry** (see step notes, DECISIONS D14)
 - [x] **7. Webhooks: outbox dispatcher (SKIP LOCKED + lease, per-invoice order), HMAC-SHA256 signing, rotation, backoff + jitter, failed state, resend, metrics** (see step notes, DECISIONS D16, [webhooks.md](webhooks.md))
 - [x] **8. Payment page: instructions + QR (EIP-681) + live status (polling), public status JSON** (see step notes, DECISIONS D17, API.md §Payment page)
-- [ ] 9. SDK: DI registration, typed client, webhook verification, typed events, README, tests
+- [x] **9. SDK (`AcceptCrypto.NET` package): DI registration, typed client, Problem Details → typed exceptions, webhook verification + rotation + tolerance, typed events, dedup hook, `MapAcceptCryptoWebhook`, README, tests** (see step notes, DECISIONS D18, [SDK README](../src/AcceptCrypto.Sdk/README.md))
 - [ ] 10. Demo shop (scripted payer and mock USDC are done in the local-chain step)
 - [ ] 11. One-command stack (docker compose), integration tests (Testcontainers, forced reorg), S1–S7
 - [ ] 12. README packaging (GIF, architecture diagram, "hard parts" section), testnet guide, PR
@@ -385,6 +385,51 @@ Notes for next steps: demo shop (step 10) redirects the customer to `payment_pag
 `PaymentPage__MerchantDisplayName=Demo Shop` and `Api__PublicBaseUrl` to the host-visible URL; README (step 12) can use
 `docs/images/payment-page-*.png` (or `/pay/sample`) — Playwright's `waitForFunction` is blocked by the page CSP, poll
 `textContent` instead.
+
+### Step 9 — SDK `AcceptCrypto.NET` for ASP.NET Core (done)
+
+Decisions: **D18**; usage: [src/AcceptCrypto.Sdk/README.md](../src/AcceptCrypto.Sdk/README.md) (also the package README).
+
+- `src/AcceptCrypto.Sdk` (package ID `AcceptCrypto.NET`, `0.1.0-alpha`, net10.0, no third-party dependencies):
+  - `AcceptCryptoServiceCollectionExtensions.AddAcceptCrypto()` (section `AcceptCrypto`; overloads with
+    `Action<AcceptCryptoOptions>` / `IConfiguration`), returns `IHttpClientBuilder`; `AcceptCryptoOptions` + validator.
+  - `IAcceptCryptoClient` / `AcceptCryptoClient` (typed HttpClient): `CreateInvoiceAsync` (idempotency key, replay
+    flag), `GetInvoiceAsync`, `ListInvoicesAsync` / `ListAllInvoicesAsync`, `CancelInvoiceAsync`,
+    `ListUnmatchedPaymentsAsync` / `ListAllUnmatchedPaymentsAsync`, `ResendEventAsync`. Models in `Models/`,
+    tolerant snake_case enums (`Json/AcceptCryptoJson.cs`), `UsdcAmount`.
+  - `Errors.cs`: `AcceptCryptoException` → `AcceptCryptoConnectionException`, `AcceptCryptoApiException` →
+    Validation / Authentication / NotFound / Conflict (`CurrentStatus`) / IdempotencyKeyReused (`InvoiceId`);
+    `AcceptCryptoErrorCodes`.
+  - `Webhooks/`: `AcceptCryptoWebhookVerifier` (verify, `VerifyAndParse`, `ComputeSignature(Header)` for tests),
+    `AcceptCryptoEvent` + `InvoiceStatusChangedEvent` / `PaymentRevertedEvent` / `UnknownAcceptCryptoEvent`,
+    `AcceptCryptoEventTypes`, `IWebhookEventDeduplicator` + `InMemoryWebhookEventDeduplicator`,
+    `MapAcceptCryptoWebhook(...)` + `IAcceptCryptoWebhookHandler` (namespace `Microsoft.AspNetCore.Builder`).
+- Tests:
+  - `tests/AcceptCrypto.Sdk.Tests` (93): client against a stub `HttpMessageHandler` (request shape, headers, query
+    building, cursor following, uint256 amounts, unknown enum values, every Problem Details → exception mapping,
+    non-JSON errors, transport errors, cancellation); verifier (the three reference vectors of webhooks.md, valid,
+    forged, altered body, expired/future timestamp + boundary, configurable tolerance, rotation both directions,
+    unknown schemes, malformed headers); event parsing (documented payload, every status event, payment.reverted,
+    unknown type, malformed bodies, amounts as numbers refused); endpoint on a TestServer (valid → handler, forged /
+    replayed / unsigned → 400, rotation, duplicate → handled once, handler failure → 500 then retry processed,
+    413, handler class, fail-fast mapping); DI binding/validation; `UsdcAmount`; deduplicator.
+  - `tests/AcceptCrypto.IntegrationTests/Api/SdkContractTests.cs` (4): SDK client against the **real service** (all
+    operations, idempotent replay, typed errors incl. 400/401/404/409/422) and SDK verification of webhooks sent by
+    the **real dispatcher** during secret rotation.
+- Verified: whole solution 135 + 110 + 93 + 152 tests green against local PostgreSQL 15
+  (`ACCEPTCRYPTO_TEST_POSTGRES`); `dotnet pack` produces `AcceptCrypto.NET.0.1.0-alpha.nupkg` (+ `.snupkg`) with
+  README, license, repository commit and SourceLink; the README's minimal example compiles.
+
+```bash
+dotnet test tests/AcceptCrypto.Sdk.Tests
+dotnet pack src/AcceptCrypto.Sdk -c Release -o artifacts      # → artifacts/AcceptCrypto.NET.0.1.0-alpha.nupkg (+ .snupkg)
+```
+
+Notes for next steps: the demo shop (step 10) uses `AddAcceptCrypto()` with section `AcceptCrypto`
+(`BaseUrl`, `ApiKey`, `WebhookSecret` = the service's `Merchant:*` values) and
+`app.MapAcceptCryptoWebhook("/webhooks/acceptcrypto", …)`; to show FR-26 it can post a forged / replayed webhook to
+itself (`AcceptCryptoWebhookVerifier.ComputeSignatureHeader` signs test payloads). Publishing to nuget.org is not
+done (needs an API key from the owner; CI already uploads the `.nupkg` as an artifact).
 
 ## Open points
 
