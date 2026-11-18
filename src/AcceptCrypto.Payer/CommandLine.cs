@@ -8,6 +8,8 @@ internal sealed class CommandLine
         "--amount", "--split", "--to", "--rpc", "--token", "--private-key", "--service", "--api-key",
     };
 
+    private static readonly HashSet<string> FlagOptions = new(StringComparer.Ordinal) { "--then-reorg" };
+
     private static readonly HashSet<string> Commands = new(StringComparer.Ordinal)
     {
         "setup", "balance", "mine", "reorg", "warp", "xpub", "help",
@@ -22,12 +24,18 @@ internal sealed class CommandLine
     /// <summary>Options with values (<c>--name value</c> or <c>--name=value</c>).</summary>
     public IReadOnlyDictionary<string, string> Options { get; private init; } = new Dictionary<string, string>();
 
+    /// <summary>Options without a value (e.g. <c>--then-reorg</c>).</summary>
+    public IReadOnlySet<string> Flags { get; private init; } = new HashSet<string>();
+
     public string? Option(string name) => Options.TryGetValue(name, out var value) ? value : null;
+
+    public bool Flag(string name) => Flags.Contains(name);
 
     public static CommandLine Parse(IReadOnlyList<string> args)
     {
         var positional = new List<string>();
         var options = new Dictionary<string, string>(StringComparer.Ordinal);
+        var flags = new HashSet<string>(StringComparer.Ordinal);
         for (var i = 0; i < args.Count; i++)
         {
             var arg = args[i];
@@ -40,6 +48,12 @@ internal sealed class CommandLine
             {
                 var eq = arg.IndexOf('=', StringComparison.Ordinal);
                 var name = eq > 0 ? arg[..eq] : arg;
+                if (eq < 0 && FlagOptions.Contains(name))
+                {
+                    flags.Add(name);
+                    continue;
+                }
+
                 if (!ValueOptions.Contains(name))
                 {
                     throw new FormatException($"Unknown option '{name}'.");
@@ -83,7 +97,7 @@ internal sealed class CommandLine
             command = "help";
         }
 
-        return new CommandLine { Command = command, Arguments = positional, Options = options };
+        return new CommandLine { Command = command, Arguments = positional, Options = options, Flags = flags };
     }
 
     public const string Usage = """
@@ -103,6 +117,8 @@ internal sealed class CommandLine
         <invoice>: payment page URL (http://host/pay/<token>), public token, or invoice ID (GUID, needs --api-key).
           --amount X    USDC amount instead of the invoice amount (less = underpay, more = overpay)
           --split N     send the amount as N transfers that add up exactly (partial payments)
+          --then-reorg  local chain only (FR-10 demo): wait until the service reports the payment as confirming,
+                        then reorg the chain so the payment's blocks are dropped — before it can become paid
 
         Options (environment variable in brackets):
           --rpc URL           JSON-RPC URL            [ACCEPTCRYPTO_RPC_URL]       default http://localhost:8545

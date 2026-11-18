@@ -26,6 +26,7 @@ public sealed class ScriptedPayerTests(AnvilFixture chain) : IAsyncLifetime
     private readonly string _depositAddress = new XpubDepositAddressDeriver(MerchantTestXpub).DeriveAddress(7);
     private WebApplication? _service;
     private long _serviceChainId = AnvilAccounts.ChainId;
+    private string _status = "pending";
     private Uri _serviceUrl = null!;
 
     public async Task InitializeAsync()
@@ -45,7 +46,7 @@ public sealed class ScriptedPayerTests(AnvilFixture chain) : IAsyncLifetime
                 ["address"] = _depositAddress,
                 ["amount"] = "25.5",
                 ["expires_at"] = "2030-01-01T00:00:00Z",
-                ["status"] = "pending",
+                ["status"] = _status,
             })
             : Results.NotFound());
         await _service.StartAsync();
@@ -70,6 +71,30 @@ public sealed class ScriptedPayerTests(AnvilFixture chain) : IAsyncLifetime
         Assert.Contains("pay 25.500000 USDC to " + _depositAddress, output, StringComparison.Ordinal);
         Assert.Equal(UsdcAmount.Parse("25.5"), await chain.Usdc.BalanceOfAsync(_depositAddress));
         Assert.Equal(UsdcAmount.Parse("974.5"), await chain.Usdc.BalanceOfAsync(AnvilAccounts.Payer.Address));
+    }
+
+    [Fact]
+    public async Task Then_reorg_drops_the_payment_once_the_service_reports_it_as_confirming()
+    {
+        _status = "confirming";
+
+        var (exit, output) = await RunAsync(Token, "--service", _serviceUrl.ToString(), "--then-reorg");
+
+        Assert.Equal(0, exit);
+        Assert.Contains("the payment is gone from the chain", output, StringComparison.Ordinal);
+        Assert.Equal(UsdcAmount.Zero, await chain.Usdc.BalanceOfAsync(_depositAddress));
+    }
+
+    [Fact]
+    public async Task Then_reorg_refuses_when_the_invoice_is_already_paid()
+    {
+        _status = "paid";
+
+        var (exit, output) = await RunAsync(Token, "--service", _serviceUrl.ToString(), "--then-reorg");
+
+        Assert.Equal(1, exit);
+        Assert.Contains("Not reorging", output, StringComparison.Ordinal);
+        Assert.Equal(UsdcAmount.Parse("25.5"), await chain.Usdc.BalanceOfAsync(_depositAddress));
     }
 
     [Fact]

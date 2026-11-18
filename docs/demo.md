@@ -59,7 +59,7 @@ All payer commands run as `docker compose run --rm payer …` (or `scripts/pay.s
 | **S4 paid late** | after it expired: `payer <url>` → `paid_late` |
 | **S5 shop down** | `docker compose stop demoshop`; pay an order; watch `service` logs retry (5 s, 10 s, 20 s, 30 s …); `docker compose start demoshop` → the queued webhooks arrive, the order becomes paid |
 | **FR-8/FR-9 service down** | pay, then at once `docker compose stop service` (or stop it first and pay with `payer --to <address> --amount <amount>`); wait; `docker compose start service` → it scans the missed blocks from its checkpoint, the invoice becomes paid, the transfer is counted once |
-| **FR-10 reorg** | pay, then within ~10 s: `docker compose run --rm payer reorg 4` → the payment disappears; the shop gets `payment.reverted` and `invoice.pending`; the invoice never becomes paid. One line: `scripts/pay.sh <url> && scripts/pay.sh reorg 4`. The reorg command re-syncs the chain clock afterwards, so later deadline checks (S4) stay correct |
+| **FR-10 reorg** | `docker compose run --rm payer <url> --then-reorg` (pays, waits for `confirming`, then reorgs from the payment's block) — or by hand, within ~10 s of paying: `docker compose run --rm payer reorg 4` → the payment disappears; the shop gets `payment.reverted` and `invoice.pending`; the invoice never becomes paid. Starting the payer twice (`scripts/pay.sh <url> && scripts/pay.sh reorg 4`) can be too slow without Docker (`dotnet run` takes ~6 s), hence `--then-reorg`. The reorg command re-syncs the chain clock afterwards, so later deadline checks (S4) stay correct |
 | **FR-26 forged / replayed webhook** | buttons on <http://localhost:5080/webhooks>, or `scripts/webhook-attack.sh forged` (also `tampered`, `replay`, `stale`) — see below |
 | **S7 unmatched transfer** | send money to the deposit address of an invoice that is already closed (e.g. a paid order; the address is on the shop's order page): `payer --to <address> --amount 1` → listed by `curl -H 'X-Api-Key: dev_api_key_00000000000000000000000000000' http://localhost:5052/v1/unmatched-payments` (reason `invoice_closed`) |
 | Mine blocks / move chain time | `payer mine 5`, `payer warp 3600` |
@@ -100,7 +100,7 @@ Chain__Enabled=true Persistence__MigrateOnStartup=true \
   dotnet run --project src/AcceptCrypto.Service               # terminal 2: http://localhost:5052
 dotnet run --project src/AcceptCrypto.DemoShop                 # terminal 3: http://localhost:5080
 PAY_USE_DOTNET=1 scripts/pay.sh http://localhost:5052/pay/<token>   # terminal 4
-PAY_USE_DOTNET=1 scripts/pay.sh reorg 4                        # any other payer command the same way
+PAY_USE_DOTNET=1 scripts/pay.sh <url> --then-reorg             # any other payer command the same way (FR-10 here)
 ```
 
 `scripts/local-chain.sh` also starts Anvil + mock USDC + funded payer, but Anvil then mines only on transactions:

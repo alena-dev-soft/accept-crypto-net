@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Scripted payer (TEST ONLY, local chain). Runs in the compose stack's `payer` container if Docker is available,
 # otherwise with `dotnet run` against localhost (stack started without Docker).
-#   scripts/pay.sh http://localhost:5052/pay/<token> [--amount X] [--split N]
+#   scripts/pay.sh http://localhost:5052/pay/<token> [--amount X] [--split N] [--then-reorg]
 #   scripts/pay.sh reorg 3 | mine 5 | warp 3600 | balance | --to <address> --amount 1
 set -euo pipefail
 cd "$(dirname "$0")/.."

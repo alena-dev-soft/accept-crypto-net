@@ -119,7 +119,7 @@ services:
     restart: unless-stopped
 
   # Scripted payer (TEST ONLY): not started by `up`; run it on demand:
-  #   docker compose run --rm payer <payment page URL | token> [--amount X] [--split N]
+  #   docker compose run --rm payer <payment page URL | token> [--amount X] [--split N] [--then-reorg]
   #   docker compose run --rm payer reorg 3 | mine 5 | warp 3600 | balance | --to <address> --amount 1
   payer:
     image: acceptcrypto/payer:local

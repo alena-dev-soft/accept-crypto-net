@@ -150,11 +150,13 @@ shop's order page, or in the API response.)
 
 ### Forced chain reorganization (FR-10)
 
-Pay, then drop the last 4 blocks **before the 5 confirmations are reached** (≈ 10 s) — the one-liner does it in time:
+Pay, then drop the payment's blocks **before the 5 confirmations are reached** (≈ 10 s). `--then-reorg` does both in
+one process: it pays, waits until the service reports the invoice as `confirming`, then reorgs the chain from the
+payment's block on — always in time:
 
 ```bash
-scripts/pay.sh <url> && scripts/pay.sh reorg 4
-# without the script: docker compose run --rm payer <url> && docker compose run --rm payer reorg 4
+docker compose run --rm payer <url> --then-reorg      # or: scripts/pay.sh <url> --then-reorg
+# by hand (within ~10 s of paying): docker compose run --rm payer reorg 4
 ```
 
 The payment vanishes from the chain → the shop receives `payment.reverted` and `invoice.pending`; the invoice never
