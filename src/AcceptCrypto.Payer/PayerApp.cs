@@ -90,6 +90,16 @@ internal sealed class PayerApp(TextWriter output, Func<string, string?> environm
         var anvil = new AnvilClient(rpc);
         await anvil.ReorgAsync(depth).ConfigureAwait(false);
         var head = await anvil.GetBlockAsync().ConfigureAwait(false);
+
+        // anvil_reorg re-mines the replaced blocks with older timestamps, so the chain clock falls behind the wall
+        // clock by ~depth × block time. Payment deadlines are compared with block timestamps (on time vs paid_late),
+        // so re-sync the clock: otherwise a later "pay after expiry" demo would still count as on time.
+        var now = DateTimeOffset.UtcNow;
+        if (head is not null && head.Timestamp < now.AddSeconds(-1))
+        {
+            await anvil.SetNextBlockTimestampAsync(now.AddSeconds(1)).ConfigureAwait(false);
+        }
+
         await output.WriteLineAsync($"Reorged the last {depth} block(s); their transactions are gone. Head #{head!.Number} {head.Hash}.").ConfigureAwait(false);
         return 0;
     }
