@@ -97,6 +97,7 @@ internal sealed class EndToEndHarness : IAsyncDisposable
             ["Chain:RetryBaseDelay"] = "00:00:00.200",
             ["Chain:RetryMaxDelay"] = "00:00:01",
             ["Invoices:MinLifetime"] = "00:00:02",
+            ["Observability:MetricsEnabled"] = "true",
         })
         {
             settings[key] = value;

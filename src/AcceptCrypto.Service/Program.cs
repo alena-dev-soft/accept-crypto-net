@@ -8,6 +8,7 @@ using AcceptCrypto.Service;
 using AcceptCrypto.Service.Api;
 using AcceptCrypto.Service.Configuration;
 using AcceptCrypto.Service.Health;
+using AcceptCrypto.Service.Observability;
 using AcceptCrypto.Service.PaymentPage;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
@@ -92,7 +93,11 @@ builder.Services.AddOpenApi(o =>
 
 // Health (NFR-7): /health = liveness (+ scanner state), /health/ready = also DB and RPC.
 var health = builder.Services.AddHealthChecks()
-    .AddCheck<DatabaseHealthCheck>("database", tags: [HealthTags.Ready]);
+    .AddCheck<DatabaseHealthCheck>("database", tags: [HealthTags.Ready])
+    .AddCheck<WebhookQueueHealthCheck>("webhooks");
+
+// Metrics (NFR-7): OpenTelemetry → Prometheus text format on /metrics (chain lag, webhook queue, delivery outcomes).
+builder.Services.AddAcceptCryptoObservability(configuration);
 if (configuration.GetValue<bool>($"{ChainOptions.SectionName}:{nameof(ChainOptions.Enabled)}"))
 {
     health.AddCheck<RpcHealthCheck>("rpc", tags: [HealthTags.Ready]);
@@ -113,12 +118,13 @@ app.UseRateLimiter();
 
 app.MapHealthChecks("/health", new HealthCheckOptions { Predicate = c => !c.Tags.Contains(HealthTags.Ready) });
 app.MapHealthChecks("/health/ready", new HealthCheckOptions { ResponseWriter = HealthReportWriter.WriteAsync });
+app.MapAcceptCryptoMetrics();
 app.MapOpenApi();
 app.MapScalarApiReference();
 app.MapMerchantApi();
 app.MapPaymentPage();
 app.MapGet("/", () => Results.Text(
-    "AcceptCrypto.NET service is running. API reference: /scalar, OpenAPI: /openapi/v1.json, health: /health, /health/ready."))
+    "AcceptCrypto.NET service is running. API reference: /scalar, OpenAPI: /openapi/v1.json, health: /health, /health/ready, metrics: /metrics."))
     .ExcludeFromDescription();
 
 StartupLog.Write(app);

@@ -8,6 +8,8 @@
     <PackageReference Include="Microsoft.AspNetCore.OpenApi" />
     <PackageReference Include="Scalar.AspNetCore" />
     <PackageReference Include="QRCoder" />
+    <PackageReference Include="OpenTelemetry.Extensions.Hosting" />
+    <PackageReference Include="OpenTelemetry.Exporter.Prometheus.AspNetCore" />
   </ItemGroup>
 
   <ItemGroup>

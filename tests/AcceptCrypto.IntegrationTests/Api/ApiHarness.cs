@@ -33,6 +33,9 @@ internal static class TestMerchant
         ["Merchant:WebhookUrl"] = "https://merchant.example/webhooks",
         ["Merchant:Xpub"] = Xpub,
         ["Webhooks:DispatcherEnabled"] = "false", // the API tests drive the outbox themselves
+        // OpenTelemetry preallocates metric storage per host; hundreds of short-lived test hosts in one process (and
+        // hosts that fail to start on purpose) would exhaust memory. The end-to-end harness turns metrics back on.
+        ["Observability:MetricsEnabled"] = "false",
     };
 }
 
