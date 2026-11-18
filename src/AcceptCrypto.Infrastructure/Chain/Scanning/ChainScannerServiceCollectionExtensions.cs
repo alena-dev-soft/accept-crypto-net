@@ -33,7 +33,7 @@ public static class ChainScannerServiceCollectionExtensions
         services.AddOptions<PersistenceOptions>()
             .PostConfigure<IOptions<ChainOptions>>((p, c) => p.ChainId = c.Value.ChainId);
 
-        services.TryAddSingleton(TimeProvider.System);
+        services.TryAddSingleton<TimeProvider>(StorageTimeProvider.Instance);
         services.AddMetrics();
         services.AddHttpClient(JsonRpcChainClient.HttpClientName, (sp, http) =>
         {

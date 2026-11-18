@@ -29,6 +29,8 @@ USDC, the payment page goes *confirming → paid*, the shop receives the signed 
 Nothing else: no .NET SDK, no wallet, no faucet, no gas. Ports 5052, 5080, 5432 and 8545 must be free.
 (The optional helper scripts in `scripts/` need `bash` and `curl`; every step below also has a plain
 `docker compose` / browser variant.)
+No Docker daemon available? The same stack runs with the .NET 10 SDK, PostgreSQL and Foundry's `anvil` — see
+[docs/demo.md → Without Docker](docs/demo.md#without-docker).
 
 ```bash
 git clone https://github.com/alena-dev-soft/accept-crypto-net.git
@@ -163,10 +165,10 @@ becomes paid. (If the page already showed *paid*, the reorg came too late — a 
 Open <http://localhost:5080/webhooks> and press the buttons, or from a terminal:
 
 ```bash
-scripts/webhook-attack.sh forged      # made-up invoice.paid with a guessed secret      → 400 SignatureMismatch
-scripts/webhook-attack.sh tampered    # genuine webhook, status edited                  → 400 SignatureMismatch
+scripts/webhook-attack.sh forged      # made-up invoice.paid with a guessed secret      → 400 "No valid v1 signature."
+scripts/webhook-attack.sh tampered    # genuine webhook, status edited                  → 400 "No valid v1 signature."
 scripts/webhook-attack.sh replay      # genuine webhook resent byte for byte            → 200 duplicate, not applied
-scripts/webhook-attack.sh stale       # genuine webhook captured 10 minutes ago         → 400 TimestampOutsideTolerance
+scripts/webhook-attack.sh stale       # genuine webhook captured 10 minutes ago         → 400 "…outside the tolerance window."
 curl -i -X POST http://localhost:5080/webhooks/acceptcrypto \
   -H "AcceptCrypto-Timestamp: $(date +%s)" -H "AcceptCrypto-Signature: v1=00" -d '{}'   # → 400
 ```

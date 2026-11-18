@@ -29,7 +29,7 @@ public static class PersistenceServiceCollectionExtensions
     public static IServiceCollection AddAcceptCryptoPersistence(this IServiceCollection services, string? connectionString)
     {
         services.AddOptions<PersistenceOptions>();
-        services.TryAddSingleton(TimeProvider.System);
+        services.TryAddSingleton<TimeProvider>(StorageTimeProvider.Instance);
         services.AddDbContextFactory<AcceptCryptoDbContext>(o => ConfigureDbContext(o, connectionString));
         services.AddSingleton<IInvoiceRepository, InvoiceRepository>();
         services.AddSingleton<IUnmatchedPaymentRepository, UnmatchedPaymentRepository>();

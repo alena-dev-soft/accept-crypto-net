@@ -1,4 +1,5 @@
 using AcceptCrypto.Infrastructure.Merchant;
+using AcceptCrypto.Infrastructure.Persistence;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
@@ -17,7 +18,7 @@ public static class WebhookServiceCollectionExtensions
     {
         ArgumentNullException.ThrowIfNull(configuration);
         services.AddAcceptCryptoMerchant(configuration);
-        services.TryAddSingleton(TimeProvider.System);
+        services.TryAddSingleton<TimeProvider>(StorageTimeProvider.Instance);
         services.AddMetrics();
         services.AddHttpClient(WebhookDispatcher.HttpClientName, http => http.Timeout = Timeout.InfiniteTimeSpan)
             .ConfigurePrimaryHttpMessageHandler(sp => sp.GetRequiredService<WebhookUrlGuard>().CreateHttpHandler());

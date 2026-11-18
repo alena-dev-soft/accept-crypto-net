@@ -73,7 +73,7 @@ recipient, DECISIONS D14), so a transfer to a random address is never seen; late
 The webhook log page has four buttons (and `scripts/webhook-attack.sh <kind>` does the same from a terminal). The shop
 sends the request to its own SDK endpoint `POST /webhooks/acceptcrypto`, like an attacker on the network would:
 
-| Kind | Request | Shop answers |
+| Kind | Request | Shop answers (rejection reason as shown in the webhook log) |
 | --- | --- | --- |
 | `forged` | made-up `invoice.paid`, signed with a guessed secret | **400** `SignatureMismatch` |
 | `tampered` | the last genuine webhook with the status changed to paid, original signature | **400** `SignatureMismatch` |
@@ -86,15 +86,22 @@ order changes. By hand: `curl -i -X POST http://localhost:5080/webhooks/acceptcr
 ## Without Docker
 
 Needs the .NET 10 SDK, PostgreSQL on `localhost:5432` (user/password `postgres`, database `acceptcrypto`) and
-[Foundry](https://getfoundry.sh) (`anvil`). Uses the same test values from the `appsettings.Development.json` files.
+[Foundry](https://getfoundry.sh) (`anvil`). Uses the same test values from the `appsettings.Development.json` files,
+which mirror the compose stack (5 confirmations, 1 min minimum invoice lifetime, webhook retries 5 s → 30 s for
+30 min), so every command of the README walk-through works the same — with `PAY_USE_DOTNET=1 scripts/pay.sh …`
+instead of `docker compose run --rm payer …`, and stopping/starting the `dotnet run` process instead of
+`docker compose stop/start`. (This is how the Definition of done was checked in a sandbox without a Docker daemon,
+see PROGRESS.md.)
 
 ```bash
-scripts/local-chain.sh                                         # terminal 1: Anvil + mock USDC + funded payer
+anvil --chain-id 31337 --block-time 2                          # terminal 1: local chain, a block every 2 s
+dotnet run --project src/AcceptCrypto.Payer -- setup           # once: deploy mock USDC, fund the payer
 Chain__Enabled=true Persistence__MigrateOnStartup=true \
   dotnet run --project src/AcceptCrypto.Service               # terminal 2: http://localhost:5052
 dotnet run --project src/AcceptCrypto.DemoShop                 # terminal 3: http://localhost:5080
 PAY_USE_DOTNET=1 scripts/pay.sh http://localhost:5052/pay/<token>   # terminal 4
-dotnet run --project src/AcceptCrypto.Payer -- mine 2          # local-chain.sh mines only on transactions: add confirmations
+PAY_USE_DOTNET=1 scripts/pay.sh reorg 4                        # any other payer command the same way
 ```
 
-Or start Anvil with blocks every 2 s: `anvil --block-time 2`, then `dotnet run --project src/AcceptCrypto.Payer -- setup`.
+`scripts/local-chain.sh` also starts Anvil + mock USDC + funded payer, but Anvil then mines only on transactions:
+add confirmations with `dotnet run --project src/AcceptCrypto.Payer -- mine 5`.
