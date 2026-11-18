@@ -15,7 +15,8 @@ Spec: `AcceptCrypto.NET_SPEC.md` (project file, not in the repo). Decisions: [DE
 - [x] **9. SDK (`AcceptCrypto.NET` package): DI registration, typed client, Problem Details → typed exceptions, webhook verification + rotation + tolerance, typed events, dedup hook, `MapAcceptCryptoWebhook`, README, tests** (see step notes, DECISIONS D18, [SDK README](../src/AcceptCrypto.Sdk/README.md))
 - [x] **10. Demo shop on the SDK + one-command stack (docker compose), demo scripts** (see step notes, DECISIONS D19, [demo.md](demo.md))
 - [x] **11. End-to-end tests S1–S7 (+ FR-8/9, FR-10, FR-26), observability (`/metrics`, webhook health check), CI test report** (see step notes, DECISIONS D20, [TESTS.md](TESTS.md), [observability.md](observability.md))
-- [ ] 12. README packaging (GIF, architecture diagram, "hard parts" section), testnet guide, PR
+- [x] **12. README and architecture documentation: value line + badge, payment-cycle GIF, architecture + state diagrams (Mermaid), Docker-only quick start, S1–S7 walk-through, "how the hard parts are solved" with proving tests, SDK, decisions, roadmap, no-mainnet warning** (see step notes)
+- [ ] Next (open): testnet guide (Base Sepolia + MetaMask), video, Upwork card / dev.to article (human), PR
 
 (Steps after 1 are a working outline; refine as the project plan evolves.)
 
@@ -518,7 +519,45 @@ the `anvil` binary): whole solution green — 135 domain + 111 infrastructure + 
 way and fixed by isolating that collection). Release build clean, SDK packs. Production run: JSON logs, `/metrics`,
 `/health/ready` checked by hand; Preview (`npm run dev`) still starts, `/health` Healthy.
 
+### Step 12 — README and architecture documentation (done)
+
+- `README.md` rewritten for the Upwork client and for a stranger: value in the first line + CI badge, no-mainnet
+  warning, **payment-cycle GIF** (`docs/images/payment-cycle.gif`, 6 frames: shop → payment page pending →
+  confirming → paid → shop order paid → webhook log), Docker-only quick start, a walk-through of S1–S7 + FR-8/9,
+  FR-10, FR-26 with exact commands, architecture diagram (Mermaid flowchart: service API / payment page / domain /
+  scanner / expiry worker / outbox dispatcher, PostgreSQL, chain, SDK, demo shop, payer), invoice state diagram incl.
+  `cancelled` and `expired → confirming` (D6, D11), "How the hard parts are solved" table (double counting, catch-up,
+  reorgs, lost webhooks, atomicity, concurrency, precision, SSRF, forged webhooks) each linking the proving test file
+  and the TESTS.md section, SDK minimal example, decisions summary → DECISIONS.md, roadmap (spec's out-of-scope list).
+- A link checker run (all relative links exist, all GitHub heading anchors resolve, every test name cited exists in
+  `tests/`) — repeat it if headings change.
+- **Fix found while following the README:** `pay reorg` used `anvil_reorg`, which re-mines the replaced blocks with
+  older timestamps; after a few reorgs the chain clock lagged the wall clock by ~35 s and a "pay after expiry" (S4)
+  ended `paid` instead of `paid_late` (block timestamp before the deadline — correct per the rule, wrong for the demo).
+  `PayerApp.ReorgAsync` now re-syncs the clock (`evm_setNextBlockTimestamp(now + 1 s)` when the head is behind).
+- How the README was checked: **Docker cannot run containers in the agent container** (dockerd starts only with
+  `--iptables=false --bridge=none`, and then `docker run` fails: "Error creating mount namespace … operation not
+  permitted"). So the README was followed on a clean clone (`git clone` → `/tmp/clean`) with the compose stack's
+  settings reproduced natively: PostgreSQL 15 (fresh database), `anvil --block-time 2 --chain-id 31337`, payer
+  `setup`, the service with `Chain__Confirmations=5`, demo retry schedule and `Invoices__MinLifetime=00:01:00`, the shop.
+  Verified: S1 curl create + idempotent replay (200), S2 via the shop in Playwright (GIF frames), S3 underpaid → top-up
+  → paid, S4 expired → `paid_late`, S5 shop killed → 4 attempts → delivered after restart, FR-8/9 service killed,
+  paid by address, restarted → paid with 1 transfer, FR-10 pay + `reorg 4` ≈ 3 s apart → `payment.reverted`,
+  `invoice.pending`, S7 `--to` a paid invoice's address → unmatched `invoice_closed`, FR-26 `webhook-attack.sh forged`
+  → 400, `replay` → 200 duplicate, manual curl → 400. `docker compose config -q` passes.
+- FR-10 timing: with `scripts/pay.sh` falling back to `dotnet run` (no Docker) the second call starts ~10 s later — too
+  late for 5 confirmations at 2 s blocks. In Docker the payer container starts in ~2–3 s (assumed, not measured here);
+  without Docker use `scripts/local-chain.sh` (no `--block-time`, blocks only on transactions) as docs/demo.md says.
+
 ## Open points
+
+- **For the human (packaging, step 12):** (1) run `docker compose up --build` once on a machine with Docker and
+  follow the README quick start — the stack has been verified natively only (see step 12); if the FR-10 one-liner is
+  too slow there, raise `Chain__Confirmations` in `docker-compose.yml`. (2) Optionally re-record
+  `docs/images/payment-cycle.gif` as a real screen recording (current one is a 6-frame slideshow of a local run).
+  (3) The 1–2 min testnet video (MetaMask on Base Sepolia), the Upwork portfolio card, the dev.to article and the
+  Project Catalog offer (spec "Packaging for Upwork") are not done — they need the owner's accounts.
+  (4) Publish the SDK to nuget.org (README says "not yet on nuget.org").
 
 - **Docker stack not yet run under real Docker** (no usable Docker in the agent container, see step 10): run
   `docker compose up -d --build && scripts/smoke-test.sh` once, or activate CI (job `compose-smoke`).
