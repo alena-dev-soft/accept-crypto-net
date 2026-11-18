@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>pay</AssemblyName>
+    <RootNamespace>AcceptCrypto.Payer</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\AcceptCrypto.LocalChain\AcceptCrypto.LocalChain.csproj" />
+    <PackageReference Include="Nethereum.HdWallet" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="AcceptCrypto.Infrastructure.Tests" />
+    <InternalsVisibleTo Include="AcceptCrypto.IntegrationTests" />
+  </ItemGroup>
+
+</Project>

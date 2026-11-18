@@ -1,0 +1,34 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <IsPackable>true</IsPackable>
+    <PackageId>AcceptCrypto.NET</PackageId>
+    <Title>AcceptCrypto.NET SDK for ASP.NET Core</Title>
+    <Description>ASP.NET Core SDK for the AcceptCrypto.NET payment service: typed API client (invoices, unmatched payments, webhook resend) and one-line webhook receiving with HMAC-SHA256 signature verification, secret rotation, replay protection and typed events — non-custodial USDC payments.</Description>
+    <PackageTags>usdc;crypto;payments;payment-gateway;webhooks;aspnetcore;ethereum;erc20;stablecoin</PackageTags>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageProjectUrl>https://github.com/alena-dev-soft/accept-crypto-net</PackageProjectUrl>
+    <RepositoryType>git</RepositoryType>
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+    <Copyright>Copyright (c) 2026 Olena Shapovalova</Copyright>
+    <Version>0.1.0-alpha</Version>
+    <RootNamespace>AcceptCrypto.Sdk</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="README.md" Pack="true" PackagePath="/" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="AcceptCrypto.Sdk.Tests" />
+  </ItemGroup>
+
+</Project>

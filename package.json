@@ -1,0 +1,8 @@
+{
+  "name": "accept-crypto-net",
+  "private": true,
+  "description": "Preview helper only: the product is a .NET 10 solution (see README.md).",
+  "scripts": {
+    "dev": "bash scripts/dev.sh"
+  }
+}

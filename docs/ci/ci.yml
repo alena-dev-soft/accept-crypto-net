@@ -1,0 +1,126 @@
+# Copy this file to .github/workflows/ci.yml to enable CI (kept here because the agent token cannot push workflow files).
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  checks: write        # test report (dorny/test-reporter) as a check run
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DOTNET_NOLOGO: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
+
+jobs:
+  build-test:
+    name: Build & test
+    # ubuntu-latest ships a running Docker daemon, so Testcontainers-based
+    # integration tests (PostgreSQL, Anvil) can run here without extra setup.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - name: Install Foundry (anvil for the chain integration tests)
+        # Optional: without it the tests start Anvil from the ghcr.io/foundry-rs/foundry image via Testcontainers.
+        uses: foundry-rs/foundry-toolchain@v1
+
+      - name: Docker info (for Testcontainers)
+        run: docker version --format 'Docker {{.Server.Version}}'
+
+      - name: Restore
+        run: dotnet restore AcceptCrypto.NET.slnx
+
+      - name: Build
+        run: dotnet build AcceptCrypto.NET.slnx --configuration Release --no-restore
+
+      - name: Pre-pull container images (keeps image download time out of test timeouts)
+        run: docker pull postgres:17-alpine
+
+      - name: Test (unit + integration + end-to-end on PostgreSQL and Anvil)
+        # --blame-hang-timeout: a hung test fails the run with a dump instead of stalling CI until the job timeout.
+        run: >
+          dotnet test AcceptCrypto.NET.slnx --configuration Release --no-build
+          --logger "trx;LogFilePrefix=results"
+          --logger "console;verbosity=minimal"
+          --results-directory ./TestResults
+          --collect "XPlat Code Coverage"
+          --blame-hang-timeout 5m
+
+      - name: Test report
+        if: ${{ !cancelled() }}
+        uses: dorny/test-reporter@v2
+        with:
+          name: Test results
+          path: TestResults/*.trx
+          reporter: dotnet-trx
+          fail-on-error: true
+          use-actions-summary: true
+
+      - name: Coverage summary
+        if: ${{ !cancelled() }}
+        uses: danielpalme/ReportGenerator-GitHub-Action@5
+        with:
+          reports: TestResults/**/coverage.cobertura.xml
+          targetdir: coverage
+          reporttypes: MarkdownSummaryGithub;HtmlInline
+          assemblyfilters: +AcceptCrypto.*;-AcceptCrypto.*Tests
+
+      - name: Publish coverage summary
+        if: ${{ !cancelled() }}
+        run: cat coverage/SummaryGithub.md >> "$GITHUB_STEP_SUMMARY" || true
+
+      - name: Pack SDK
+        run: dotnet pack src/AcceptCrypto.Sdk/AcceptCrypto.Sdk.csproj --configuration Release --no-build --output ./artifacts
+
+      - name: Upload test results and coverage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: |
+            TestResults
+            coverage
+
+      - name: Upload NuGet package
+        uses: actions/upload-artifact@v4
+        with:
+          name: nuget-package
+          path: artifacts/*.nupkg
+
+  compose-smoke:
+    name: One-command stack (docker compose) smoke test
+    # NFR-9 / Definition of done: `docker compose up` on a clean checkout, then the S1 → S2 → webhook cycle.
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Start the stack
+        run: docker compose up -d --build
+
+      - name: S1 → S2 → webhook → forged webhook rejected
+        run: scripts/smoke-test.sh
+
+      - name: Logs on failure
+        if: failure()
+        run: docker compose logs --no-color --tail 200
+
+      - name: Stop
+        if: always()
+        run: docker compose down -v

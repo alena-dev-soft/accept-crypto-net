@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- TEST/DEV ONLY: local Anvil chain tooling (mock USDC, well-known Anvil accounts, mining/reorg/time-warp helpers).
+       Used by the scripted payer and the integration tests. Never referenced by the service. -->
+
+  <ItemGroup>
+    <PackageReference Include="Nethereum.Web3" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\AcceptCrypto.Domain\AcceptCrypto.Domain.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="Contracts\MockUsdc.json" LogicalName="AcceptCrypto.LocalChain.MockUsdc.json" />
+  </ItemGroup>
+
+</Project>

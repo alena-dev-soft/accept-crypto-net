@@ -1,0 +1,137 @@
+# AcceptCrypto.NET — the whole local stack in one command (NFR-9):
+#
+#   docker compose up --build
+#
+#   Demo shop        http://localhost:5080   (buy something → payment page → pay with the scripted payer)
+#   Service          http://localhost:5052   (payment pages /pay/{token}, API /v1/*, docs /scalar, /health/ready)
+#   Anvil (chain)    http://localhost:8545   (chain 31337, a block every 2 s)
+#   PostgreSQL       localhost:5432          (acceptcrypto / postgres / postgres)
+#
+#   Pay an invoice:  docker compose run --rm payer http://localhost:5052/pay/<token>   (or scripts/pay.sh …)
+#   More commands (underpay, reorg, stop the shop / the service, forged webhooks): docs/demo.md
+#   Reset everything: docker compose down -v
+#
+# ⚠ TEST-ONLY VALUES. The API key, webhook secret and xpub below are throwaway values for this local stack:
+#   the xpub belongs to the public BIP39 test mnemonic "test test … junk", the payer key is Anvil's public account #1.
+#   Never reuse them anywhere real. Real deployments pass Merchant__* via secrets, not via a committed file.
+
+x-test-merchant:
+  # Shared by the service (Merchant__*) and the demo shop (AcceptCrypto__*). TEST ONLY.
+  API_KEY: &api-key dev_api_key_00000000000000000000000000000
+  WEBHOOK_SECRET: &webhook-secret dev_webhook_secret_0000000000000000000000
+
+name: acceptcrypto
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: acceptcrypto
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres   # TEST ONLY
+    ports: ["5432:5432"]
+    volumes: [postgres-data:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d acceptcrypto"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  anvil:
+    image: ghcr.io/foundry-rs/foundry:v1.9.0
+    entrypoint: ["anvil"]
+    # --block-time 2: blocks keep coming, so confirmations accrue without manual mining.
+    command: ["--host", "0.0.0.0", "--port", "8545", "--chain-id", "31337", "--block-time", "2"]
+    ports: ["8545:8545"]
+    healthcheck:
+      test: ["CMD", "cast", "block-number", "--rpc-url", "http://127.0.0.1:8545"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  # One-off: deploys the TEST-ONLY mock USDC (6 decimals) at 0x5FbDB2315678afecb367f032d93F642f64180aa3 and mints
+  # 1,000,000 USDC to the payer (Anvil account #1). Idempotent; exits when done.
+  deploy:
+    build: { context: ., target: payer }
+    image: acceptcrypto/payer:local
+    command: ["setup"]
+    environment:
+      ACCEPTCRYPTO_RPC_URL: http://anvil:8545
+    depends_on:
+      anvil: { condition: service_healthy }
+    restart: "no"
+
+  service:
+    build: { context: ., target: service }
+    image: acceptcrypto/service:local
+    ports: ["5052:8080"]
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      Logging__Console__FormatterName: simple
+      Logging__Console__FormatterOptions__TimestampFormat: "HH:mm:ss "
+      ConnectionStrings__AcceptCrypto: Host=postgres;Port=5432;Database=acceptcrypto;Username=postgres;Password=postgres
+      Persistence__MigrateOnStartup: "true"
+      # Payment page links must open in the browser on the host.
+      Api__PublicBaseUrl: http://localhost:5052
+      # Merchant (FR-0) — TEST ONLY values.
+      Merchant__ApiKey: *api-key
+      Merchant__WebhookSecret: *webhook-secret
+      Merchant__WebhookUrl: http://demoshop:8080/webhooks/acceptcrypto
+      Merchant__Xpub: xpub6EF8jXqFeFEW5bwMU7RpQtHkzE4KJxcqJtvkCjJumzW8CPpacXkb92ek4WzLQXjL93HycJwTPUAcuNxCqFPKKU5m5Z2Vq4nCyh5CyPeBFFr
+      # SSRF guard (NFR-6): the shop's Docker-network host is explicitly allowlisted.
+      Webhooks__AllowedHosts__0: demoshop
+      # Short demo retry schedule (FR-14; production default ≈ 24 h): 5 s, 10 s, 20 s, 30 s, 30 s … for 30 min.
+      Webhooks__InitialRetryDelay: "00:00:05"
+      Webhooks__MaxRetryDelay: "00:00:30"
+      Webhooks__MaxAttempts: "60"
+      Webhooks__RetryWindow: "00:30:00"
+      Invoices__MinLifetime: "00:01:00"
+      PaymentPage__MerchantDisplayName: Demo Shop
+      # Local chain.
+      Chain__Enabled: "true"
+      Chain__ChainId: "31337"
+      Chain__NetworkName: Anvil (local)
+      Chain__RpcUrl: http://anvil:8545
+      Chain__TokenAddress: "0x5FbDB2315678afecb367f032d93F642f64180aa3"
+      Chain__StartBlock: "0"
+      # 5 blocks ≈ 10 s: long enough to watch "confirming" and to force a reorg before "paid" (FR-10 demo).
+      Chain__Confirmations: "5"
+    depends_on:
+      postgres: { condition: service_healthy }
+      deploy: { condition: service_completed_successfully }
+    restart: unless-stopped
+
+  demoshop:
+    build: { context: ., target: demoshop }
+    image: acceptcrypto/demoshop:local
+    ports: ["5080:8080"]
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      Logging__Console__FormatterName: simple
+      Logging__Console__FormatterOptions__TimestampFormat: "HH:mm:ss "
+      AcceptCrypto__BaseUrl: http://service:8080
+      AcceptCrypto__ApiKey: *api-key            # TEST ONLY
+      AcceptCrypto__WebhookSecret: *webhook-secret  # TEST ONLY
+      Shop__DataPath: /data/shop.json
+      Shop__PayerCommand: docker compose run --rm payer
+    volumes: [shop-data:/data]
+    depends_on: [service]
+    restart: unless-stopped
+
+  # Scripted payer (TEST ONLY): not started by `up`; run it on demand:
+  #   docker compose run --rm payer <payment page URL | token> [--amount X] [--split N] [--then-reorg]
+  #   docker compose run --rm payer reorg 3 | mine 5 | warp 3600 | balance | --to <address> --amount 1
+  payer:
+    image: acceptcrypto/payer:local
+    build: { context: ., target: payer }
+    profiles: [tools]
+    environment:
+      ACCEPTCRYPTO_RPC_URL: http://anvil:8545
+      ACCEPTCRYPTO_SERVICE_URL: http://service:8080   # wins over the localhost host of a payment page URL
+      ACCEPTCRYPTO_API_KEY: *api-key                  # only for paying by invoice ID; TEST ONLY
+    depends_on:
+      anvil: { condition: service_healthy }
+
+volumes:
+  postgres-data:
+  shop-data:

@@ -1,0 +1,81 @@
+# AcceptCrypto.NET against Base Sepolia (TESTNET) — service + PostgreSQL + demo shop, no local chain.
+# Step-by-step guide: docs/testnet.md
+#
+#   cp base-sepolia.env.example base-sepolia.env     # fill in your values; base-sepolia.env is git-ignored (*.env)
+#   docker compose -f docker-compose.base-sepolia.yml --env-file base-sepolia.env up --build
+#
+#   Demo shop   http://localhost:5080   (buy the sticker pack → payment page → pay from MetaMask)
+#   Service     http://localhost:5052   (payment pages /pay/{token}, API /v1/*, docs /scalar, /health/ready, /metrics)
+#
+# The chain settings (chain ID 84532, Circle test USDC, confirmations, getLogs range) are the "BaseSepolia" profile:
+# src/AcceptCrypto.Service/appsettings.BaseSepolia.json. Secrets are only read from base-sepolia.env.
+# Uses the same host ports as docker-compose.yml: stop the local stack first. Reset: add `down -v`.
+
+name: acceptcrypto-base-sepolia
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: acceptcrypto
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres   # local container only, not published beyond localhost
+    ports: ["127.0.0.1:5432:5432"]
+    volumes: [postgres-data:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d acceptcrypto"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  service:
+    build: { context: ., target: service }
+    image: acceptcrypto/service:local
+    ports: ["5052:8080"]
+    environment:
+      ASPNETCORE_ENVIRONMENT: BaseSepolia          # loads appsettings.BaseSepolia.json
+      Logging__Console__FormatterName: simple
+      Logging__Console__FormatterOptions__TimestampFormat: "HH:mm:ss "
+      ConnectionStrings__AcceptCrypto: Host=postgres;Port=5432;Database=acceptcrypto;Username=postgres;Password=postgres
+      Persistence__MigrateOnStartup: "true"
+      Api__PublicBaseUrl: ${PUBLIC_BASE_URL:-http://localhost:5052}
+      # Secrets (FR-0, NFR-5): only from base-sepolia.env, never committed.
+      Chain__RpcUrl: ${BASE_SEPOLIA_RPC_URL:?set BASE_SEPOLIA_RPC_URL in base-sepolia.env}
+      Merchant__ApiKey: ${MERCHANT_API_KEY:?set MERCHANT_API_KEY in base-sepolia.env}
+      Merchant__WebhookSecret: ${MERCHANT_WEBHOOK_SECRET:?set MERCHANT_WEBHOOK_SECRET in base-sepolia.env}
+      Merchant__Xpub: ${MERCHANT_XPUB:?set MERCHANT_XPUB in base-sepolia.env}
+      Merchant__WebhookUrl: http://demoshop:8080/webhooks/acceptcrypto
+      Webhooks__AllowedHosts__0: demoshop          # SSRF allowlist (NFR-6): the shop on the Docker network
+      # Short demo retry schedule (FR-14), as in the local stack.
+      Webhooks__InitialRetryDelay: "00:00:05"
+      Webhooks__MaxRetryDelay: "00:00:30"
+      Webhooks__MaxAttempts: "60"
+      Webhooks__RetryWindow: "00:30:00"
+      PaymentPage__MerchantDisplayName: Demo Shop
+      # Optional overrides of the profile, e.g. for an RPC plan with a smaller eth_getLogs range:
+      Chain__MaxBlockRange: ${CHAIN_MAX_BLOCK_RANGE:-200}
+      Chain__Confirmations: ${CHAIN_CONFIRMATIONS:-60}
+    depends_on:
+      postgres: { condition: service_healthy }
+    restart: unless-stopped
+
+  demoshop:
+    build: { context: ., target: demoshop }
+    image: acceptcrypto/demoshop:local
+    ports: ["5080:8080"]
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      Logging__Console__FormatterName: simple
+      Logging__Console__FormatterOptions__TimestampFormat: "HH:mm:ss "
+      AcceptCrypto__BaseUrl: http://service:8080
+      AcceptCrypto__ApiKey: ${MERCHANT_API_KEY:?set MERCHANT_API_KEY in base-sepolia.env}
+      AcceptCrypto__WebhookSecret: ${MERCHANT_WEBHOOK_SECRET:?set MERCHANT_WEBHOOK_SECRET in base-sepolia.env}
+      Shop__DataPath: /data/shop.json
+      Shop__PayerCommand: ""                       # hide the local-chain scripted-payer hint (pay from MetaMask)
+    volumes: [shop-data:/data]
+    depends_on: [service]
+    restart: unless-stopped
+
+volumes:
+  postgres-data:
+  shop-data:
