@@ -69,3 +69,26 @@ jobs:
         with:
           name: nuget-package
           path: artifacts/*.nupkg
+
+  compose-smoke:
+    name: One-command stack (docker compose) smoke test
+    # NFR-9 / Definition of done: `docker compose up` on a clean checkout, then the S1 → S2 → webhook cycle.
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Start the stack
+        run: docker compose up -d --build
+
+      - name: S1 → S2 → webhook → forged webhook rejected
+        run: scripts/smoke-test.sh
+
+      - name: Logs on failure
+        if: failure()
+        run: docker compose logs --no-color --tail 200
+
+      - name: Stop
+        if: always()
+        run: docker compose down -v

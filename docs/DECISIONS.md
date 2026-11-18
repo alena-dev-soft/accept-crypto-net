@@ -19,6 +19,7 @@ New decisions are appended with the next number; a changed decision is marked *S
 | D11 | Domain model & edge cases | BigInteger base units; status derived from facts, walked along diagram edges; `expired → confirming` for on-time payments found late; late overpay → `paid_late` |
 | D13 | Local chain & derivation | Own minimal 6-decimal MockUsdc (artifact committed), deployed by the .NET payer at a fixed address; xpub at m/44'/60'/0'/0, child = invoice index; payer reads a public payment-details endpoint |
 | D18 | SDK | Package `AcceptCrypto.NET`, net10.0, no 3rd-party deps; `AddAcceptCrypto()` + typed HttpClient; Problem Details → typed exceptions; own `UsdcAmount`; constant-time HMAC over all secrets × all `v1=`; `MapAcceptCryptoWebhook` with pluggable dedup (in-memory default) |
+| D19 | Demo shop & one-command stack | Shop on the SDK only (server-rendered, JSON-file store with persistent dedup); compose: postgres, anvil (2 s blocks), one-off `deploy`, service, demoshop, `payer` (tools profile); test values inline with warnings |
 
 ---
 
@@ -548,3 +549,49 @@ claims expire after 5 min); a multi-instance merchant registers a DB-backed one.
 **Contract safety.** `IntegrationTests/Api/SdkContractTests.cs` runs the SDK client against the real service (real
 PostgreSQL) and verifies webhooks produced by the real dispatcher during a rotation, so the two sides cannot drift
 apart unnoticed.
+
+## D19 — Demo shop and the one-command stack (step 10)
+
+**Demo shop = an ordinary SDK consumer.** `src/AcceptCrypto.DemoShop` references only the SDK (no service/domain code)
+and uses exactly what the SDK README shows: `AddAcceptCrypto()`, `CreateInvoiceAsync` with idempotency key
+`order-<orderId>`, `MapAcceptCryptoWebhook`, a custom `IWebhookEventDeduplicator`. Pages are server-rendered HTML
+strings (no Razor/JS build), auto-refreshing every 3 s; every value is HTML-encoded.
+
+**Shop storage: one JSON file, written atomically (temp + rename) after each change**, in the `shop-data` volume. Why:
+no second database or EF model in a sample app, yet orders and processed event IDs survive a restart (S5: the shop
+comes back and the redelivered/queued events are applied once). The store *is* the deduplicator: applying an event to
+the order and remembering its ID happen in one write — the file-based version of "update the order and insert the
+event ID in one transaction". An event older than the last applied one (manual resend) is logged as stale and does
+not move the order back. Cost: single instance only — fine for a demo, documented in the SDK README for real apps.
+
+**SDK addition: `IAcceptCryptoWebhookObserver`** (optional, any number in DI) with `OnRejectedAsync(context, reason,
+body)` and `OnDuplicateAsync(context, event, claim)`. Needed to show rejected forged/replayed webhooks in the shop's log
+without re-verifying; useful for real merchants as a security audit hook. Observer exceptions are logged and ignored —
+monitoring never changes the webhook response.
+
+**FR-26 demo from inside the shop.** `POST /demo/attacks/{forged|tampered|replay|stale}` (buttons + 
+`scripts/webhook-attack.sh`) sends a bad request to the shop's own endpoint over real HTTP. `stale` signs a genuine
+body with the real secret at *now − 10 min* to simulate a captured old message without waiting 5 minutes; `replay` is
+the byte-exact last genuine webhook (duplicate within the tolerance, rejected after). The `X-Demo-Attack` header only
+labels log lines; the endpoint ignores it. These endpoints exist only in the demo shop.
+
+**Compose layout.** `postgres:17-alpine`; `ghcr.io/foundry-rs/foundry:v1.9.0` running `anvil --block-time 2` (blocks
+keep coming so confirmations accrue without manual mining; with automine nothing would confirm); a one-off `deploy`
+container (the payer image running `setup`, idempotent) that the service waits for (`service_completed_successfully`);
+`service` (migrates on start, `Api__PublicBaseUrl=http://localhost:5052` so links open on the host); `demoshop`; and
+`payer` in the `tools` profile so `up` does not run it. One multi-stage `Dockerfile` with targets `service`,
+`demoshop`, `payer` (one restore/publish stage shared by all). Demo tuning: 5 confirmations (≈ 10 s — long enough to
+see `confirming` and to force a reorg before `paid`), retries 5 s doubling to 30 s within 30 min, `demoshop` on
+`Webhooks:AllowedHosts`.
+
+**Payer inside Docker.** The payment page URL says `localhost:5052`, which inside the payer container is not the
+service. An explicit `--service` / `ACCEPTCRYPTO_SERVICE_URL` now wins over the URL's host (only the token is taken);
+compose sets it to `http://service:8080`. Without it the old behaviour stays (service taken from the URL).
+
+**Test secrets.** The API key, webhook secret and xpub (public `test test … junk` mnemonic) are inline in
+`docker-compose.yml` with a warning banner — the same throwaway values as `appsettings.Development.json`. No `.env`
+file: a stranger must be able to `docker compose up` without creating anything (Definition of done).
+
+**Known limitation.** Anvil keeps state in memory: `docker compose restart anvil` (or `down` without `-v`) gives a fresh
+chain while PostgreSQL keeps the old checkpoint and invoices. Reset with `docker compose down -v`.
+

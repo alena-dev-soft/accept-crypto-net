@@ -130,6 +130,14 @@ order update:
 builder.Services.AddSingleton<IWebhookEventDeduplicator, DbWebhookEventDeduplicator>();
 ```
 
+**Monitoring rejected webhooks.** Register any number of `IAcceptCryptoWebhookObserver` implementations to be told
+about rejected (`OnRejectedAsync(context, reason, body)`) and duplicate (`OnDuplicateAsync(context, event, claim)`)
+webhooks — e.g. to alert on forged requests. Observer failures are logged and never change the response:
+
+```csharp
+builder.Services.AddSingleton<IAcceptCryptoWebhookObserver, WebhookAuditLog>();
+```
+
 **Secret rotation.** Accept the new and the old secret while the service switches:
 
 ```json
